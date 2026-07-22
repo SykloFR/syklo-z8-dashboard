@@ -72,6 +72,7 @@
 <div class="cfg" id="cfgPanel">
   <div class="row"><span class="k">Preset moteur</span><span class="val" id="cMotor">–</span></div>
   <div class="row"><span class="k">Tension moteur</span><span class="val" id="cVolt">–</span></div>
+  <div class="row"><span class="k">Max Power</span><span class="val" id="cPmax">–</span></div>
   <div class="row"><span class="k">Courant batt. max</span><span class="val" id="cBatI">–</span></div>
   <div class="row"><span class="k">Courant moteur max</span><span class="val" id="cMotI">–</span></div>
   <div class="row"><span class="k">Cut-off</span><span class="val" id="cCut">–</span></div>
@@ -179,7 +180,7 @@ function handle05(dv) {
       whX10:u16(8), np:b(10), mode:b(11), levels:b(12), fw:b(13), street:b(14),
       streetSpd:b(15), focMult:b(16), rangeAdj:b(17), thr:b(18) });
   } else if (sub === 1) {
-    Object.assign(cfg, { tOff:u16(2), tMax:u16(4), tStep:b(6) });
+    Object.assign(cfg, { tOff:u16(2), tMax:u16(4), tStep:b(6), pMax:b(7)*25 });
   } else if (sub === 2) {
     cfg.aP = [b(2),b(3),b(4),b(5),b(6)]; cfg.aT = [b(7),b(8),b(9),b(10),b(11)];
   } else if (sub === 3) {
@@ -192,6 +193,7 @@ function renderCfg() {
   const set = (id, v) => { if (v !== undefined) $(id).textContent = v; };
   set('cMotor', MOTORS[cfg.motor] ?? cfg.motor);
   set('cVolt', cfg.mvolt === undefined ? undefined : (cfg.mvolt ? '36 V' : '48 V'));
+  set('cPmax', cfg.pMax !== undefined ? cfg.pMax+' W' : undefined);
   set('cBatI', cfg.batI !== undefined ? cfg.batI+' A' : undefined);
   set('cMotI', cfg.motI !== undefined ? cfg.motI+' A' : undefined);
   set('cCut', cfg.cutX10 !== undefined ? (cfg.cutX10/10).toFixed(1)+' V' : undefined);
