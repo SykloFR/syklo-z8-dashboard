@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syklo Z8-OSF — Télémétrie bench</title>
+<style>
+  :root { --bg:#111418; --card:#1b2027; --tx:#e8eaed; --dim:#8a93a0; --ok:#4cd07d; --warn:#f0b429; --err:#ef5350; --acc:#4da3ff; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--tx); font:14px/1.4 system-ui,sans-serif; padding:16px; }
+  h1 { font-size:18px; margin-bottom:10px; }
+  h2 { font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin:14px 0 8px; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; align-items:center; }
+  button { background:var(--acc); border:0; color:#fff; padding:8px 14px; border-radius:6px; font-weight:600; cursor:pointer; }
+  button.sec { background:#2a3340; }
+  button:disabled { opacity:.4; cursor:default; }
+  #status { color:var(--dim); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  .tile { background:var(--card); border-radius:8px; padding:10px 12px; }
+  .tile .l { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  .tile .v { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .tile .u { color:var(--dim); font-size:12px; }
+  #errTile.bad .v { color:var(--err); }
+  canvas { width:100%; height:220px; background:var(--card); border-radius:8px; margin-top:8px; }
+  .legend { color:var(--dim); font-size:12px; margin:6px 0 8px; }
+  .legend b { font-weight:600; }
+  /* config panel */
+  .cfg { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:6px 18px; background:var(--card); border-radius:8px; padding:12px 14px; }
+  .cfg .row { display:flex; justify-content:space-between; border-bottom:1px solid #232a33; padding:3px 0; }
+  .cfg .k { color:var(--dim); } .cfg .val { font-weight:600; font-variant-numeric:tabular-nums; }
+  table.assist { border-collapse:collapse; margin-top:4px; font-variant-numeric:tabular-nums; }
+  table.assist td, table.assist th { padding:3px 10px; text-align:right; border-bottom:1px solid #232a33; }
+  table.assist th { color:var(--dim); font-weight:600; text-align:right; }
+  table.assist td:first-child, table.assist th:first-child { text-align:left; color:var(--dim); }
+</style>
+</head>
+<body>
+<h1>Syklo Z8-OSF — Télémétrie bench <span id="status">(déconnecté)</span></h1>
+<div class="bar">
+  <button id="btnConnect">Connecter (BLE)</button>
+  <button id="btnRec" class="sec" disabled>● Enregistrer</button>
+  <button id="btnDl" class="sec" disabled>Télécharger JSONL</button>
+  <button id="btnStats" class="sec" disabled>Copier stats</button>
+  <span id="recInfo" style="color:var(--dim)"></span>
+</div>
+
+<h2>Données live (paquet 0x04 @5 Hz)</h2>
+<div class="grid">
+  <div class="tile"><div class="l">ADC torque</div><div class="v" id="vTorque">–</div><div class="u">brut (vide 120–250)</div></div>
+  <div class="tile"><div class="l">Torque delta</div><div class="v" id="vDelta">–</div><div class="u">ADC</div></div>
+  <div class="tile"><div class="l">Cadence</div><div class="v" id="vCad">–</div><div class="u">rpm</div></div>
+  <div class="tile"><div class="l">Duty cycle</div><div class="v" id="vDuty">–</div><div class="u">/ 254</div></div>
+  <div class="tile"><div class="l">Vitesse rotor</div><div class="v" id="vErps">–</div><div class="u">ERPS</div></div>
+  <div class="tile"><div class="l">Angle FOC</div><div class="v" id="vFoc">–</div><div class="u"></div></div>
+  <div class="tile"><div class="l">Courant batt.</div><div class="v" id="vCur">–</div><div class="u">ADC brut</div></div>
+  <div class="tile"><div class="l">Tension</div><div class="v" id="vVolt">–</div><div class="u">V</div></div>
+  <div class="tile"><div class="l">Vitesse roue</div><div class="v" id="vSpeed">–</div><div class="u">km/h</div></div>
+  <div class="tile"><div class="l">Niveau assist</div><div class="v" id="vLvl">–</div><div class="u" id="vMode"></div></div>
+  <div class="tile"><div class="l">Hall</div><div class="v" id="vHall">–</div><div class="u">état 1–6</div></div>
+  <div class="tile" id="errTile"><div class="l">Erreurs</div><div class="v" id="vErr">–</div><div class="u" id="vErrBits"></div></div>
+  <div class="tile"><div class="l">Paquets</div><div class="v" id="vPkts">0</div><div class="u"><span id="vLost">0</span> perdus (0x04)</div></div>
+</div>
+
+<canvas id="chart" width="1200" height="220"></canvas>
+<div class="legend">Fenêtre 60 s — <b style="color:#4da3ff">ADC torque</b> ·
+<b style="color:#4cd07d">duty</b> · <b style="color:#f0b429">courant ADC</b> · <b style="color:#c58af0">ERPS/2</b>.</div>
+
+<h2>Paramètres moteur / batterie (paquet 0x05, refresh 2 s)</h2>
+<div class="cfg" id="cfgPanel">
+  <div class="row"><span class="k">Preset moteur</span><span class="val" id="cMotor">–</span></div>
+  <div class="row"><span class="k">Tension moteur</span><span class="val" id="cVolt">–</span></div>
+  <div class="row"><span class="k">Courant batt. max</span><span class="val" id="cBatI">–</span></div>
+  <div class="row"><span class="k">Courant moteur max</span><span class="val" id="cMotI">–</span></div>
+  <div class="row"><span class="k">Cut-off</span><span class="val" id="cCut">–</span></div>
+  <div class="row"><span class="k">Capacité</span><span class="val" id="cWh">–</span></div>
+  <div class="row"><span class="k">Cellules //</span><span class="val" id="cNp">–</span></div>
+  <div class="row"><span class="k">Mode assistance</span><span class="val" id="cMode">–</span></div>
+  <div class="row"><span class="k">Nb niveaux</span><span class="val" id="cLevels">–</span></div>
+  <div class="row"><span class="k">Field weakening</span><span class="val" id="cFW">–</span></div>
+  <div class="row"><span class="k">Street mode</span><span class="val" id="cStreet">–</span></div>
+  <div class="row"><span class="k">FOC multiplier</span><span class="val" id="cFoc">–</span></div>
+  <div class="row"><span class="k">Torque range adj</span><span class="val" id="cRange">–</span></div>
+  <div class="row"><span class="k">Torque threshold</span><span class="val" id="cThr">–</span></div>
+  <div class="row"><span class="k">Torque offset</span><span class="val" id="cOff">–</span></div>
+  <div class="row"><span class="k">Torque max</span><span class="val" id="cMax">–</span></div>
+  <div class="row"><span class="k">Torque step</span><span class="val" id="cStep">–</span></div>
+</div>
+
+<h2>Facteurs d'assistance par niveau</h2>
+<table class="assist" id="assistTbl">
+  <tr><th>Mode</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th><th>L5</th></tr>
+  <tr><td>Power</td><td id="aP0">–</td><td id="aP1">–</td><td id="aP2">–</td><td id="aP3">–</td><td id="aP4">–</td></tr>
+  <tr><td>Torque</td><td id="aT0">–</td><td id="aT1">–</td><td id="aT2">–</td><td id="aT3">–</td><td id="aT4">–</td></tr>
+  <tr><td>Cadence</td><td id="aC0">–</td><td id="aC1">–</td><td id="aC2">–</td><td id="aC3">–</td><td id="aC4">–</td></tr>
+  <tr><td>eMTB</td><td id="aE0">–</td><td id="aE1">–</td><td id="aE2">–</td><td id="aE3">–</td><td id="aE4">–</td></tr>
+</table>
+
+<script>
+const NUS_SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const $ = id => document.getElementById(id);
+let recording = false, log = [], lastSeq = null, pkts = 0, lost = 0;
+let cfg = {};                // dernier état config connu (fusion des sous-trames)
+const hist = []; const HIST_MS = 60000;
+const MOTORS = { 0:'Z2', 1:'Z8 48V', 2:'RD45', 3:'Z8 36V', 4:'Z8-OSF 48V', 5:'Z8-OSF 36V' };
+const MODES  = { 0:'power', 1:'torque', 2:'cadence', 3:'eMTB', 4:'hybrid' };
+
+// niveau d'assist + mode : lus du paquet SykloConnect 0x01 (déjà émis, +1 encodé)
+let curLvl = null, curMode = null;
+function decode04(dv) {
+  return { seq:dv.getUint8(1), torque:dv.getUint16(2,true), delta:dv.getUint16(4,true),
+    cad:dv.getUint8(6), duty:dv.getUint8(7), erps:dv.getUint16(8,true), foc:dv.getUint8(10),
+    cur:dv.getUint16(11,true), voltX10:dv.getUint16(13,true), err:dv.getUint8(15),
+    hall:dv.getUint8(16), spdX10:dv.getUint16(17,true) };
+}
+
+function onNotify(ev) {
+  const dv = ev.target.value;
+  if (dv.byteLength < 2) return;
+  const h = dv.getUint8(0);
+  if (h === 0x04 && dv.byteLength >= 19) return handle04(dv);
+  if (h === 0x05 && dv.byteLength >= 19) return handle05(dv);
+  if (h === 0x01 && dv.byteLength >= 18) return handle01(dv);
+  // headers 2/3 = SykloConnect (non utilisés ici), ignorés
+}
+
+// Paquet 0x01 SykloConnect (config, ~2 s) : byte16 = mode+1, byte17 = niveau+1
+function handle01(dv) {
+  curMode = dv.getUint8(16) - 1;
+  curLvl  = dv.getUint8(17) - 1;
+  $('vLvl').textContent = curLvl;
+  $('vMode').textContent = MODES[curMode] ?? curMode;
+}
+
+function handle04(dv) {
+  const d = decode04(dv), now = Date.now();
+  pkts++;
+  if (lastSeq !== null) { const g = (d.seq - lastSeq + 256) % 256; if (g > 1) lost += g - 1; }
+  lastSeq = d.seq;
+  $('vTorque').textContent=d.torque; $('vDelta').textContent=d.delta;
+  $('vCad').textContent=d.cad; $('vDuty').textContent=d.duty;
+  $('vErps').textContent=d.erps; $('vFoc').textContent=d.foc;
+  $('vCur').textContent=d.cur; $('vVolt').textContent=(d.voltX10/10).toFixed(1);
+  $('vSpeed').textContent=(d.spdX10/10).toFixed(1); $('vHall').textContent=d.hall;
+  $('vPkts').textContent=pkts; $('vLost').textContent=lost;
+  const bits=[]; for (let b=0;b<8;b++) if (d.err&(1<<b)) bits.push(b===7?'E08':'bit'+b);
+  $('vErr').textContent = d.err ? '0x'+d.err.toString(16).padStart(2,'0') : 'OK';
+  $('vErrBits').textContent = bits.join(' ');
+  $('errTile').classList.toggle('bad', !!d.err);
+  hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps });
+  while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
+  if (recording) { log.push({ t:now, lvl:curLvl, mode:curMode, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
+}
+
+function handle05(dv) {
+  const sub = dv.getUint8(1), b = i => dv.getUint8(i), u16 = i => dv.getUint16(i, true);
+  if (sub === 0) {
+    Object.assign(cfg, { motor:b(2), mvolt:b(3), batI:b(4), motI:b(5), cutX10:u16(6),
+      whX10:u16(8), np:b(10), mode:b(11), levels:b(12), fw:b(13), street:b(14),
+      streetSpd:b(15), focMult:b(16), rangeAdj:b(17), thr:b(18) });
+  } else if (sub === 1) {
+    Object.assign(cfg, { tOff:u16(2), tMax:u16(4), tStep:b(6) });
+  } else if (sub === 2) {
+    cfg.aP = [b(2),b(3),b(4),b(5),b(6)]; cfg.aT = [b(7),b(8),b(9),b(10),b(11)];
+  } else if (sub === 3) {
+    cfg.aC = [b(2),b(3),b(4),b(5),b(6)]; cfg.aE = [b(7),b(8),b(9),b(10),b(11)];
+  }
+  renderCfg();
+}
+
+function renderCfg() {
+  const set = (id, v) => { if (v !== undefined) $(id).textContent = v; };
+  set('cMotor', MOTORS[cfg.motor] ?? cfg.motor);
+  set('cVolt', cfg.mvolt === undefined ? undefined : (cfg.mvolt ? '36 V' : '48 V'));
+  set('cBatI', cfg.batI !== undefined ? cfg.batI+' A' : undefined);
+  set('cMotI', cfg.motI !== undefined ? cfg.motI+' A' : undefined);
+  set('cCut', cfg.cutX10 !== undefined ? (cfg.cutX10/10).toFixed(1)+' V' : undefined);
+  set('cWh', cfg.whX10 !== undefined ? (cfg.whX10/10).toFixed(0)+' Wh' : undefined);
+  set('cNp', cfg.np);
+  set('cMode', MODES[cfg.mode] ?? cfg.mode);
+  set('cLevels', cfg.levels);
+  set('cFW', cfg.fw === undefined ? undefined : (cfg.fw ? 'on' : 'off'));
+  set('cStreet', cfg.street === undefined ? undefined : (cfg.street ? ('on / '+cfg.streetSpd+' km/h') : 'off'));
+  set('cFoc', cfg.focMult);
+  set('cRange', cfg.rangeAdj);
+  set('cThr', cfg.thr);
+  set('cOff', cfg.tOff);
+  set('cMax', cfg.tMax);
+  set('cStep', cfg.tStep);
+  const fill = (pre, arr) => { if (arr) arr.forEach((v,i)=> $(pre+i).textContent = v); };
+  fill('aP', cfg.aP); fill('aT', cfg.aT); fill('aC', cfg.aC); fill('aE', cfg.aE);
+}
+
+function drawChart() {
+  const c=$('chart'), g=c.getContext('2d'), W=c.width, H=c.height, now=Date.now();
+  g.clearRect(0,0,W,H);
+  const series=[{k:'torque',col:'#4da3ff',max:520},{k:'duty',col:'#4cd07d',max:254},
+    {k:'cur',col:'#f0b429',max:400},{k:'erps',col:'#c58af0',max:560}];
+  for (const s of series) {
+    g.beginPath(); g.strokeStyle=s.col; g.lineWidth=1.5; let started=false;
+    for (const p of hist) {
+      const x=W-(now-p.t)/HIST_MS*W, y=H-Math.min(p[s.k]/s.max,1)*(H-8)-4;
+      started?g.lineTo(x,y):(g.moveTo(x,y),started=true);
+    }
+    g.stroke();
+  }
+  requestAnimationFrame(drawChart);
+}
+drawChart();
+
+$('btnConnect').onclick = async () => {
+  try {
+    const dev = await navigator.bluetooth.requestDevice({ filters:[{services:[NUS_SVC]}], optionalServices:[NUS_SVC] });
+    $('status').textContent = '(connexion à '+(dev.name||'?')+'…)';
+    dev.addEventListener('gattserverdisconnected', () => { $('status').textContent='(déconnecté)'; });
+    const gatt = await dev.gatt.connect();
+    const svc = await gatt.getPrimaryService(NUS_SVC);
+    const ch = await svc.getCharacteristic(NUS_TX);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', onNotify);
+    $('status').textContent = '(connecté : '+(dev.name||'SW102')+')';
+    $('btnRec').disabled = $('btnStats').disabled = false;
+  } catch (e) { $('status').textContent = '(erreur : '+e.message+')'; }
+};
+
+$('btnRec').onclick = () => {
+  recording = !recording;
+  if (recording) { log=[]; $('btnRec').textContent='■ Stop'; $('btnDl').disabled=true; }
+  else { $('btnRec').textContent='● Enregistrer'; $('btnDl').disabled=!log.length; }
+};
+$('btnDl').onclick = () => {
+  const blob = new Blob([log.map(r=>JSON.stringify(r)).join('\n')], {type:'application/jsonl'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'bench-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jsonl';
+  a.click();
+};
+function stats(key) {
+  const src = (recording||log.length) ? log : hist;
+  const v = src.map(r=>r[key]).filter(x=>x!==undefined);
+  if (!v.length) return null;
+  return { n:v.length, min:Math.min(...v), max:Math.max(...v), mean:+(v.reduce((a,b)=>a+b,0)/v.length).toFixed(1) };
+}
+$('btnStats').onclick = async () => {
+  const s = { window:(recording||log.length)?'enregistrement':'60s',
+    config: cfg, torque:stats('torque'), delta:stats('delta'), duty:stats('duty'),
+    cur:stats('cur'), erps:stats('erps'), pkts, lost };
+  await navigator.clipboard.writeText(JSON.stringify(s, null, 1));
+  $('recInfo').textContent = 'stats+config copiées → coller à Claude';
+};
+</script>
+</body>
+</html>
