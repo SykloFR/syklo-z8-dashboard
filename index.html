@@ -978,12 +978,24 @@ async function benchTick(){
 
 function benchArm(){
   if(!nusRx){ alert('Connectez d’abord le SW102.'); return; }
-  // Les erreurs moteur sont cumulatives et ne s'effacent qu'à la coupure de la
-  // batterie : démarrer dessus fausserait toute mesure.
+  /* Toute erreur mémorisée — E08 COMPRIS — met la cible de duty à 0 côté moteur
+     (ebike_app.c, « reset control parameters if… ») sauf si assist-with-error est
+     actif. Armer dans cet état donnerait un mode banc qui ne fait rien tourner,
+     sans qu'on comprenne pourquoi. Et ces erreurs ne s'effacent QUE par coupure
+     de l'alimentation moteur.
+     ⚠ E08 est structurel en mode banc tant que le moteur tourne en < 1.0.2 : le
+     rotor dépasse 90 ERPS alors que la roue est immobile. Le patch moteur P10
+     (v1.0.2) exclut le mode calibration de ce contrôle. */
   const cur = hist.length ? hist[hist.length-1].err : 0;
-  if(cur & 0x7F){
+  if(cur && !aweOn){
     alert('Le moteur signale déjà : '+errTxt(cur)+'\n\n'
-      +'Coupez l’alimentation du MOTEUR (batterie), rallumez, puis réarmez.\n\nNon armé.');
+      +'Tant qu’une erreur est mémorisée, le moteur force la consigne de duty à 0 : '
+      +'le mode banc ne ferait rien tourner.\n\n'
+      +'→ Coupez l’alimentation du MOTEUR (batterie), pas seulement le display, '
+      +'puis rallumez et réarmez.\n\n'
+      +(cur & 0x80 ? 'E08 revient à chaque run tant que le moteur n’est pas en 1.0.2 '
+                     +'(patch P10) : c’est structurel, la roue ne tourne pas.\n\n' : '')
+      +'Non armé.');
     return;
   }
   const loaded = +$('benchLoad').value;
