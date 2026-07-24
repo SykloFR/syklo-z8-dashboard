@@ -39,6 +39,7 @@
 <h1>Syklo Z8-OSF — Télémétrie bench <span id="status">(déconnecté)</span></h1>
 <div class="bar">
   <button id="btnConnect">Connecter (BLE)</button>
+  <button id="btnTrainer" class="sec">Connecter home trainer</button>
   <button id="btnRec" class="sec" disabled>● Enregistrer</button>
   <button id="btnDl" class="sec" disabled>Télécharger JSONL</button>
   <button id="btnStats" class="sec" disabled>Copier stats</button>
@@ -55,6 +56,8 @@
   <div class="tile"><div class="l">Angle FOC</div><div class="v" id="vFoc">–</div><div class="u"></div></div>
   <div class="tile"><div class="l">Courant batt.</div><div class="v" id="vCur">–</div><div class="u">ADC brut</div></div>
   <div class="tile"><div class="l">Puissance batt.</div><div class="v" id="vPow">–</div><div class="u">W (via 0x02)</div></div>
+  <div class="tile" id="trainerTile"><div class="l">Puissance roue</div><div class="v" id="vPmeca">–</div><div class="u" id="vTrainerSrc">home trainer</div></div>
+  <div class="tile"><div class="l">Ratio roue/batt.</div><div class="v" id="vRatio">–</div><div class="u">inclut l'apport cycliste</div></div>
   <div class="tile"><div class="l">Tension moteur</div><div class="v" id="vVolt">–</div><div class="u">V (remontée moteur)</div></div>
   <div class="tile" id="streetTile"><div class="l">Street mode</div><div class="v" id="vStreet">–</div><div class="u" id="vStreetLim"></div></div>
   <div class="tile"><div class="l">Vitesse roue</div><div class="v" id="vSpeed">–</div><div class="u">km/h</div></div>
@@ -66,7 +69,8 @@
 
 <canvas id="chart" width="1200" height="220"></canvas>
 <div class="legend">Fenêtre 60 s — <b style="color:#4da3ff">ADC torque</b> ·
-<b style="color:#4cd07d">duty</b> · <b style="color:#f0b429">courant ADC</b> · <b style="color:#c58af0">ERPS/2</b>.</div>
+<b style="color:#4cd07d">duty</b> · <b style="color:#f0b429">courant ADC</b> · <b style="color:#c58af0">ERPS/2</b> ·
+<b style="color:#ff7ab6">puissance roue</b> (home trainer).</div>
 
 <h2>Paramètres moteur / batterie (paquet 0x05, refresh 2 s)</h2>
 <div class="cfg" id="cfgPanel">
@@ -143,6 +147,9 @@ function handle01(dv) {
 // Paquet 0x02 SykloConnect (live 100ms) : byte9 = puissance/10 +1,
 // byte11 bits (−1) : b3 = street feature, b4 = street actif
 let curPower = null, curStreet = null;
+// pmeca est defini plus bas avec le bloc home trainer, declare ici pour etre
+// visible depuis onNotify (log JSONL) sans dependre de l'ordre d'evaluation.
+var pmeca = null;
 function handle02(dv) {
   curPower = (dv.getUint8(9) - 1) * 10;                 // W
   const b11 = dv.getUint8(11) - 1;
@@ -168,9 +175,9 @@ function handle04(dv) {
   $('vErr').textContent = d.err ? '0x'+d.err.toString(16).padStart(2,'0') : 'OK';
   $('vErrBits').textContent = bits.join(' ');
   $('errTile').classList.toggle('bad', !!d.err);
-  hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps });
+  hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps , pmeca:pmeca??0});
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
-  if (recording) { log.push({ t:now, lvl:curLvl, mode:curMode, pow:curPower, street:curStreet, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
+  if (recording) { log.push({ t:now, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
 }
 
 function handle05(dv) {
@@ -217,7 +224,8 @@ function drawChart() {
   const c=$('chart'), g=c.getContext('2d'), W=c.width, H=c.height, now=Date.now();
   g.clearRect(0,0,W,H);
   const series=[{k:'torque',col:'#4da3ff',max:520},{k:'duty',col:'#4cd07d',max:254},
-    {k:'cur',col:'#f0b429',max:400},{k:'erps',col:'#c58af0',max:560}];
+    {k:'cur',col:'#f0b429',max:400},{k:'erps',col:'#c58af0',max:560},
+    {k:'pmeca',col:'#ff7ab6',max:800}];
   for (const s of series) {
     g.beginPath(); g.strokeStyle=s.col; g.lineWidth=1.5; let started=false;
     for (const p of hist) {
@@ -245,6 +253,93 @@ $('btnConnect').onclick = async () => {
   } catch (e) { $('status').textContent = '(erreur : '+e.message+')'; }
 };
 
+/* ---------------------------------------------------------------------------
+   HOME TRAINER — connexion BLE independante du SW102.
+   Web Bluetooth autorise plusieurs appareils simultanement : le trainer et le
+   display sont deux connexions GATT distinctes, elles ne se genent pas.
+
+   Deux standards possibles selon le modele :
+   - Cycling Power Service 0x1818 / Cycling Power Measurement 0x2A63.
+     La puissance instantanee est TOUJOURS aux octets 2-3 (sint16 LE), quels
+     que soient les flags. Universel (Wahoo, Tacx, Elite, elite...).
+   - FTMS 0x1826 / Indoor Bike Data 0x2AD2. La puissance est a une position
+     VARIABLE, il faut derouler les flags pour la trouver.
+   On tente CPS d'abord (plus simple et plus fiable), FTMS en repli.
+--------------------------------------------------------------------------- */
+const CPS_SVC='00001818-0000-1000-8000-00805f9b34fb', CPS_MEAS='00002a63-0000-1000-8000-00805f9b34fb';
+const FTMS_SVC='00001826-0000-1000-8000-00805f9b34fb', FTMS_BIKE='00002ad2-0000-1000-8000-00805f9b34fb';
+let trainerDev = null;
+
+function parseCPS(dv) {
+  // octets 0-1 flags, 2-3 puissance instantanee (W, signe)
+  return dv.byteLength >= 4 ? dv.getInt16(2, true) : null;
+}
+
+function parseFTMS(dv) {
+  // Les champs se suivent dans un ordre fixe ; chaque bit de flags indique la
+  // presence du champ suivant. Il faut donc avancer champ par champ jusqu'a la
+  // puissance (bit 6). ATTENTION bit 0 : "More Data" INVERSE — la vitesse
+  // instantanee est presente quand le bit vaut 0.
+  if (dv.byteLength < 4) return null;
+  const f = dv.getUint16(0, true);
+  let o = 2;
+  if (!(f & 0x0001)) o += 2;      // Instantaneous Speed
+  if (f & 0x0002) o += 2;         // Average Speed
+  if (f & 0x0004) o += 2;         // Instantaneous Cadence
+  if (f & 0x0008) o += 2;         // Average Cadence
+  if (f & 0x0010) o += 3;         // Total Distance (uint24)
+  if (f & 0x0020) o += 2;         // Resistance Level
+  if (f & 0x0040) {               // Instantaneous Power
+    return (o + 2 <= dv.byteLength) ? dv.getInt16(o, true) : null;
+  }
+  return null;                    // ce trainer ne diffuse pas la puissance
+}
+
+function onTrainer(parser) {
+  return (e) => {
+    const w = parser(e.target.value);
+    if (w === null || w < 0 || w > 3000) return;   // garde-fou valeurs aberrantes
+    pmeca = w;
+    $('vPmeca').textContent = w;
+    // Ratio roue/batterie. N'a de sens que si le moteur consomme reellement.
+    // Rappel : la puissance a la roue inclut l'apport du cycliste, ce n'est
+    // donc PAS le rendement du moteur.
+    $('vRatio').textContent = (curPower && curPower > 20)
+      ? (w / curPower).toFixed(2) : '–';
+  };
+}
+
+$('btnTrainer').onclick = async () => {
+  try {
+    $('vTrainerSrc').textContent = 'recherche…';
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ services:[CPS_SVC] }, { services:[FTMS_SVC] }],
+      optionalServices: [CPS_SVC, FTMS_SVC]
+    });
+    trainerDev = dev;
+    dev.addEventListener('gattserverdisconnected', () => {
+      $('vTrainerSrc').textContent = 'déconnecté';
+      $('vPmeca').textContent = '–'; $('vRatio').textContent = '–'; pmeca = null;
+    });
+    const gatt = await dev.gatt.connect();
+    let svc, ch, parser, kind;
+    try {
+      svc = await gatt.getPrimaryService(CPS_SVC);
+      ch  = await svc.getCharacteristic(CPS_MEAS);
+      parser = parseCPS; kind = 'Cycling Power';
+    } catch (_) {
+      svc = await gatt.getPrimaryService(FTMS_SVC);
+      ch  = await svc.getCharacteristic(FTMS_BIKE);
+      parser = parseFTMS; kind = 'FTMS';
+    }
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', onTrainer(parser));
+    $('vTrainerSrc').textContent = (dev.name || 'trainer') + ' · ' + kind;
+  } catch (e) {
+    $('vTrainerSrc').textContent = 'erreur : ' + e.message;
+  }
+};
+
 $('btnRec').onclick = () => {
   recording = !recording;
   if (recording) { log=[]; $('btnRec').textContent='■ Stop'; $('btnDl').disabled=true; }
@@ -266,6 +361,7 @@ function stats(key) {
 $('btnStats').onclick = async () => {
   const s = { window:(recording||log.length)?'enregistrement':'60s',
     config: cfg, torque:stats('torque'), delta:stats('delta'), duty:stats('duty'),
+    pmeca:stats('pmeca'), pow:stats('pow'),
     cur:stats('cur'), erps:stats('erps'), pkts, lost };
   await navigator.clipboard.writeText(JSON.stringify(s, null, 1));
   $('recInfo').textContent = 'stats+config copiées → coller à Claude';
