@@ -95,8 +95,16 @@ function pushTelemetry(){
   dv.setUint8(15,0); dv.setUint8(16,1+(seq%6)); dv.setUint16(17,0,true);
   ctx('onNotify')({target:{value:dv}});
 }
+let LOSS = 0, lossBurst = 0;
 function pushBenchState(){
   if(!disp.state && !disp.grace) return;
+  if(lossBurst > 0){ lossBurst--; if(disp.state) disp.grace = 10; return; }
+  // perte independante + salves courtes (0,6 s), regime plausible d un NUS charge
+  if(LOSS && ((seq*7919)%100) < LOSS){ if(((seq*104729)%100) < 15) lossBurst = 3; return; }
+  // salves de perte : 1,2 s d'affilee, comme observe sur un NUS sature
+  if(lossBurst > 0){ lossBurst--; if(disp.state) disp.grace = 10; return; }
+  // perte independante + salves courtes (0,6 s), regime plausible d un NUS charge
+  if(LOSS && ((seq*7919)%100) < LOSS){ if(((seq*104729)%100) < 15) lossBurst = 3; return; }
   if(disp.state) disp.grace = 10; else disp.grace--;
   const dv = new DataView(new ArrayBuffer(8));
   dv.setUint8(0,0x06); dv.setUint8(1,disp.state); dv.setUint8(2,disp.duty);
@@ -161,10 +169,23 @@ console.log('ecritures BLE :', OUT.sends.length, '- opcodes distincts :',
 console.log('ERREURS :', OUT.errors.length ? OUT.errors : 'aucune');
 
 // ---- 3. phase B : deux blocs, rearmement au milieu ---------------------
+console.log('\n=== 2bis. phase A avec 60% de perte sur les trames 0x06 ===');
+LOSS = 60; sandbox.window._lastProto = null;   // sinon on relit le run precedent
+OUT.steps.length = 0; OUT.alerts.length = 0; advance.last = null;
+ctx('benchArm()'); await advance(600); armPhysically(); await advance(1000);
+ctx("startProto('A')");
+if(OUT.alerts.length) console.log('ALERTES :', OUT.alerts);
+guard = 0;
+while(ctx('proto') && guard++ < 400) await advance(1000);
+const rA2 = sandbox.window._lastProto ? sandbox.window._lastProto.results : [];
+console.log('  etapes terminees :', rA2.length, '/ 11');
+console.log('  resultat :', rA2.length===11 ? 'AUCUNE interruption — la seance a tenu' : 'SEANCE COUPEE');
+LOSS = 0;
+
 console.log('\n=== 3. phase B (2 blocs) ===');
 OUT.steps.length = 0; OUT.alerts.length = 0; advance.last = null;
 const TB = NOW;
-ctx('benchArm()'); await advance(600); armPhysically(); await advance(1000);
+ctx('benchArm()'); await advance(600); armPhysically(); await advance(4000);
 ctx("startProto('B')");
 if(OUT.alerts.length) console.log('ALERTES :', OUT.alerts);
 guard = 0; let rearmed = false;

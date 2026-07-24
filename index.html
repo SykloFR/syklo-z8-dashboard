@@ -202,6 +202,7 @@
     <div><div class="l">Courant</div><div class="v" id="benchCur">–</div></div>
     <div id="benchAlive"><div class="l">Marge dead-man</div><div class="v" id="benchAliveV">–</div></div>
   </div>
+  <div id="benchDiag" style="color:var(--dim);font-size:12px;margin-top:8px"></div>
   <div class="hint">
     Séquence : <b>Armer</b> → le display affiche l'écran de confirmation → appuyez
     <b>M</b> puis <b>▲</b> sur le display → <b>Appliquer</b>. Le moteur s'arrête seul si le
@@ -348,7 +349,11 @@ function handle02(dv) {
 const BENCH_STOP_TXT = {0:'', 1:'arrêté au display', 2:'keep-alive perdu',
                         3:'durée max atteinte', 4:'frein actionné'};
 var benchAck = null;   // {state, duty, dutyMax, reason, deadman, runtime, at}
+var benchAckTimes = [];      // horodatage des trames 0x06, pour mesurer la perte
+var benchLastStop = null;    // derniere cause d'arret, gardee affichee
 function handle06(dv) {
+  benchAckTimes.push(Date.now());
+  while (benchAckTimes.length && Date.now()-benchAckTimes[0] > 5000) benchAckTimes.shift();
   benchAck = { state:dv.getUint8(1), duty:dv.getUint8(2), dutyMax:dv.getUint8(3),
                reason:dv.getUint8(4), deadman:dv.getUint8(5),
                runtime:dv.getUint16(6,true), at:Date.now() };
@@ -359,7 +364,10 @@ function handle06(dv) {
     // On n'y reagit qu'apres avoir vu le mode REELLEMENT engage : sinon les
     // trames de remanence d'un run precedent (~2 s) couperaient un rearmement
     // immediat.
-    else if (bench.engagedSeen) benchStop(BENCH_STOP_TXT[benchAck.reason] || 'arrêté au display');
+    else if (bench.engagedSeen){
+      benchLastStop = (BENCH_STOP_TXT[benchAck.reason] || 'arrêté au display')+' (display)';
+      benchStop(benchLastStop);
+    }
   }
 }
 
@@ -1137,7 +1145,9 @@ async function benchSend(sub, val){
     if(nusRx.writeValueWithoutResponse) await nusRx.writeValueWithoutResponse(f);
     else await nusRx.writeValue(f);
     return true;
-  }catch(_){ return false; }
+  }catch(_){
+    try{ await nusRx.writeValue(f); return true; }catch(__){ return false; }
+  }
 }
 
 function benchUi(msg){
@@ -1158,8 +1168,13 @@ function benchUi(msg){
   $('btnBenchArm').className   = on && st ? 'ok' : on ? 'busy' : '';
   // Tant que le display n'a pas confirme, la consigne ne sert a rien.
   $('btnBenchGo').disabled     = !on || !b.engagedSeen;
-  if(msg !== undefined) $('benchArmHint').textContent = msg;
+  if(msg !== undefined){ $('benchArmHint').textContent = msg; if(msg && !on) benchLastStop = msg; }
   else if(!nusRx) $('benchArmHint').textContent = 'connectez le SW102 d’abord';
+  // Diagnostic permanent : sans le taux de trames 0x06 on ne peut pas
+  // distinguer une perte BLE d'un arret reel du display.
+  const rate = benchAckTimes.length ? (benchAckTimes.length/5).toFixed(1) : '0';
+  $('benchDiag').textContent = (on||benchAckTimes.length ? 'état display : '+rate+' trames/s' : '')
+    + (benchLastStop ? '   ·   dernier arrêt : '+benchLastStop : '');
 
   const h = hist.length ? hist[hist.length-1] : null;
   $('benchSent').textContent = on && b.running
@@ -1171,7 +1186,7 @@ function benchUi(msg){
      l'âge de nos écritures — c'est elle qui décide. Repli sur notre propre âge
      tant que le display ne rapporte rien (firmware < 2.18.3). */
   let margin = null;
-  if(on && benchAck && b.engagedSeen && Date.now()-benchAck.at < 1500)
+  if(on && benchAck && b.engagedSeen && Date.now()-benchAck.at < 3000)
     margin = benchAck.deadman/10;                       // ticks 100 ms -> s
   else if(on && b.lastOk)
     margin = Math.max(0, 2 - (Date.now()-b.lastOk)/1000);
@@ -1181,12 +1196,18 @@ function benchUi(msg){
 
 async function benchTick(){
   const b = bench; if(!b || b.busy) return;
-  /* Le display rapportait son etat (0x06) et s'est tu : il a quitte le mode
-     banc, ou la liaison est tombee. Dans les deux cas on cesse de piloter — le
-     symptome constate au banc etait justement un panneau qui continuait a
-     envoyer des keep-alive dans le vide. */
-  if(b.engagedSeen && benchAck && Date.now()-benchAck.at > 1500){
-    benchAbort('le display ne rapporte plus le mode banc'); return;
+  /* Le display rapportait son etat (0x06) et s'est tu ALORS QUE la telemetrie
+     continue d'arriver : il a donc quitte le mode banc sans qu'on ait vu ses
+     trames de remanence.
+     ⚠ Seuil genereux et conditionne au flux 0x04. Un premier reglage a 1,5 s
+     coupait la seance au bout de ~5 s : le NUS du nRF51 est sature (0x02 a
+     10 Hz, plus 0x04 et 0x06 a 5 Hz chacun) et perd des trames par salves — le
+     dashboard tuait sa propre session. Le vrai garde-fou reste le dead-man du
+     display (2 s) ; ce test-ci n'est qu'un confort d'affichage et doit donc
+     pecher par exces de tolerance. */
+  const linkAlive = lastPkt && (Date.now()-lastPkt < 2000);
+  if(b.engagedSeen && benchAck && linkAlive && Date.now()-benchAck.at > 5000){
+    benchAbort('le display ne rapporte plus le mode banc (5 s sans trame 0x06)'); return;
   }
   /* Armement demande mais jamais confirme physiquement : on ne laisse pas le
      panneau se croire actif indefiniment. */
@@ -1225,7 +1246,10 @@ async function benchTick(){
     }
     const ok = b.running ? await benchSend(2, Math.round(b.sentD)) : await benchSend(3, 0);
     if(ok){ b.fails = 0; b.lastOk = Date.now(); }
-    else if(++b.fails >= 3){ benchAbort('écriture BLE impossible — moteur coupé par le dead-man'); return; }
+    // 6 echecs consecutifs = 3 s, soit au-dela du dead-man du display : celui-ci
+    // aura deja coupe. Un seuil a 3 (1,5 s) declenchait sur une simple salve de
+    // congestion GATT, ce qui coupait la seance sans raison.
+    else if(++b.fails >= 6){ benchAbort('écriture BLE impossible ('+b.fails+' échecs) — moteur coupé par le dead-man'); return; }
   } finally { if(bench) bench.busy = false; }
   benchUi();
 }
