@@ -89,7 +89,10 @@ function pushTelemetry(){
   const dv = new DataView(new ArrayBuffer(19));
   dv.setUint8(0,0x04); dv.setUint8(1,seq++ & 0xff);
   dv.setUint16(2,180,true); dv.setUint16(4,5,true);        // torque, delta
-  dv.setUint8(6,0); dv.setUint8(7,Math.round(disp.state===2?disp.duty:0));
+  // duty remonte en POUR-CENT, comme le vrai moteur (ebike_app.c octet 15).
+  // L'ancienne version remontait la valeur brute 0-254 : le harnais portait la
+  // meme fausse hypothese que le dashboard, et le rodage n'a pas vu le bug.
+  dv.setUint8(6,0); dv.setUint8(7,Math.round((disp.state===2?disp.duty:0)*100/254));
   dv.setUint16(8,Math.round(erps),true); dv.setUint8(10,0);
   dv.setUint16(11,Math.round(cur),true); dv.setUint16(13,480,true);
   dv.setUint8(15,0); dv.setUint8(16,1+(seq%6)); dv.setUint16(17,0,true);

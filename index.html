@@ -91,7 +91,7 @@
   <div class="tile"><div class="l">ADC torque</div><div class="v" id="vTorque">–</div><div class="u">brut (vide 120–250)</div></div>
   <div class="tile"><div class="l">Torque delta</div><div class="v" id="vDelta">–</div><div class="u">ADC</div></div>
   <div class="tile"><div class="l">Cadence</div><div class="v" id="vCad">–</div><div class="u">rpm</div></div>
-  <div class="tile"><div class="l">Duty cycle</div><div class="v" id="vDuty">–</div><div class="u">/ 254</div></div>
+  <div class="tile"><div class="l">Duty cycle</div><div class="v" id="vDuty">–</div><div class="u">% (remonté moteur)</div></div>
   <div class="tile"><div class="l">Vitesse rotor</div><div class="v" id="vErps">–</div><div class="u">ERPS</div></div>
   <div class="tile"><div class="l">Angle FOC</div><div class="v" id="vFoc">–</div><div class="u"></div></div>
   <div class="tile"><div class="l">Courant batt.</div><div class="v" id="vCur">–</div><div class="u">ADC brut</div></div>
@@ -289,6 +289,9 @@ const errTxt  = e => errList(e).map(b => b.code+' '+b.lbl).join(' · ');
 let curLvl = null, curMode = null;
 function decode04(dv) {
   return { seq:dv.getUint8(1), torque:dv.getUint16(2,true), delta:dv.getUint16(4,true),
+    // duty : le moteur le remonte deja converti en % 0-100 (ebike_app.c,
+    // octet 15 de la reponse : "convert duty-cycle to 0 - 100 %") — ne JAMAIS
+    // le comparer a la consigne 0-254 sans conversion.
     cad:dv.getUint8(6), duty:dv.getUint8(7), erps:dv.getUint16(8,true), foc:dv.getUint8(10),
     cur:dv.getUint16(11,true), voltX10:dv.getUint16(13,true), err:dv.getUint8(15),
     hall:dv.getUint8(16), spdX10:dv.getUint16(17,true) };
@@ -438,7 +441,7 @@ function renderCfg() {
 function drawChart() {
   const c=$('chart'), g=c.getContext('2d'), W=c.width, H=c.height, now=Date.now();
   g.clearRect(0,0,W,H);
-  const series=[{k:'torque',col:'#4da3ff',max:520},{k:'duty',col:'#4cd07d',max:254},
+  const series=[{k:'torque',col:'#4da3ff',max:520},{k:'duty',col:'#4cd07d',max:100},
     {k:'cur',col:'#f0b429',max:400},{k:'erps',col:'#c58af0',max:560},
     {k:'pmeca',col:'#ff7ab6',max:800}];
   for (const s of series) {
@@ -1058,7 +1061,8 @@ function nextStep(){
     benchStop('fin de bloc').then(()=>benchArmRequest(p.loaded));
   }
 
-  $('pTitle').textContent = st.id+' — '+st.title+(st.dur?'  ('+st.dur+' s)':'');
+  $('pTitle').textContent = st.id+' — '+st.title
+      +(st.dur ? '  ('+(st.settle?st.settle+' s d’établissement + ':'')+st.dur+' s de mesure)' : '');
   let instr=st.instr;
   if(st.res!=null){
     $('pRes').hidden=false; $('pRes').textContent='résistance '+st.res+' %';
@@ -1259,7 +1263,7 @@ function benchUi(msg){
   const h = hist.length ? hist[hist.length-1] : null;
   $('benchSent').textContent = on && b.running
       ? D2P(b.sentD)+' %'+(b.clamped ? ' ⏳' : '') : (on ? 'armé' : '–');
-  $('benchAck').textContent  = h ? D2P(h.duty)+' %' : '–';
+  $('benchAck').textContent  = h ? h.duty+' %' : '–';   // deja en % (cf. decode04)
   $('benchErps').textContent = h ? h.erps : '–';
   $('benchCur').textContent  = h ? (h.cur*0.16).toFixed(1)+' A' : '–';
   /* Marge avant coupure : celle que le DISPLAY décompte réellement (0x06), pas
@@ -1320,8 +1324,13 @@ async function benchTick(){
          le display soit deja arme, engage et rapportant son etat — le danger
          couvert par le plafond (commander dans le vide) ne peut pas se produire. */
       const slack = b.stepMode ? 255 : BENCH_SLACK;
+      /* h.duty est en POUR-CENT (le moteur convertit avant d'emettre), la
+         consigne sentD est en 0-254. Sans cette conversion le clamp trouvait
+         un equilibre a 48/254 (19 %) et AUCUN palier ne montait plus haut —
+         toute la phase A du 2026-07-24 a ete invalidee par ca. */
+      const hRaw = P2D(h ? h.duty : 0);
       b.clamped = false;
-      if(ackFresh && b.sentD > h.duty + slack){ b.sentD = h.duty + slack; b.clamped = true; }
+      if(ackFresh && b.sentD > hRaw + slack){ b.sentD = hRaw + slack; b.clamped = true; }
       else if(!ackFresh && b.sentD > slack){ b.sentD = slack; b.clamped = true; }
     }
     const ok = b.running ? await benchSend(2, Math.round(b.sentD)) : await benchSend(3, 0);
