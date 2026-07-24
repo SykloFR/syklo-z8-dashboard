@@ -137,3 +137,30 @@ vite, et sans charge maximale le moteur tourne vite mais ne force pas.
 Verdict par étape (OK / ATTENTION / ÉCHEC) + « Copier le verdict » (JSON avec la
 config moteur du paquet 0x05). Le mode ERG n'est **jamais** utilisé : sa double
 boucle de régulation masque les écarts entre moteurs (cf. étude banc).
+
+### E08 et assist-with-error (phase A)
+
+Chaîne déposée, la roue ne tourne jamais → **E08 (capteur vitesse) est inévitable**
+dès que le moteur tourne assez longtemps, et sans contre-mesure il coupe
+l'assistance et bloque le test (constaté au banc le 2026-07-24).
+
+Au lancement de la **phase A**, le dashboard active donc automatiquement
+**assist-with-error** sur le display (commande BLE `[15, 0, 1]` sur NUS RX —
+`BLE_OPTIONS` sous-index 0, qui pose aussi le flag franchissant le verrou du mot
+de passe). E08 est alors **toléré** par les verdicts de la phase A (les autres
+erreurs restent bloquantes). En phase B (roue entraînée par le trainer), E08 ne
+doit pas apparaître : sa présence est signalée en ATTENTION (capteur à vérifier,
+ou moteur à power-cycler — E08 reste mémorisé côté moteur).
+
+⚠️ Ce réglage **persiste dans l'EEPROM du display** et serait dangereux sur route
+(assistance possible malgré une erreur). Il est donc **toujours désactivé en fin
+de test**, même abandonné (+ garde-fou à la fermeture de la page). Le bandeau du
+test affiche l'état ; si la commande BLE échoue, l'instruction demande de le
+faire au menu.
+
+### Watchdog télémétrie
+
+Le `gattserverdisconnected` ne part pas toujours quand le display redémarre
+(constaté au banc). Le dashboard surveille donc le flux 0x04 : après 5 s sans
+paquet, le bouton repasse en « Reconnecter (BLE) » ; pendant un test, le chrono
+de l'étape est **mis en pause** et un bandeau demande la reconnexion.
