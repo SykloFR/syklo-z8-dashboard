@@ -72,7 +72,7 @@ function applyToFakeDisplay(f){
   switch(f[1]){
     case 1: disp.dutyMax = f[2] ? 229 : 152; disp.pending = true; break;
     case 2: if(disp.state){ disp.duty=Math.min(f[2],disp.dutyMax); disp.state=2; disp.deadman=20;
-                            if(!disp.runtime) disp.runtime=1200; } break;
+                            if(!disp.runtime) disp.runtime=3000; } break;
     case 3: if(disp.state) disp.deadman=20; break;
     default: disp.state=0; disp.duty=0; disp.deadman=0; disp.runtime=0; break;
   }

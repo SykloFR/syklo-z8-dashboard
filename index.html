@@ -118,7 +118,7 @@
   <div id="protoIdle">
     <div class="bar" style="margin-bottom:6px">
       <button id="btnProtoA">▶ Phase A — moteur seul, chaîne déposée (~2 min)</button>
-      <button id="btnProtoB">▶ Phase B — banc en charge (2 blocs, ~4 min)</button>
+      <button id="btnProtoB">▶ Phase B — banc en charge (~4 min)</button>
     </div>
     <div class="hint">
       Les deux phases pilotent le moteur par le <b>mode banc</b> : aucun pédalage,
@@ -126,10 +126,10 @@
       d'abord</b> (panneau ci-dessous), le protocole fait le reste.<br>
       <b>A</b> = chaîne DÉPOSÉE — diagnostic avant montage : capteurs au repos et au
       pédalier, décollage, paliers croissants, haut régime, démarrages répétés,
-      échelon, roue libre. Tient dans les 120 s de marche autorisées par le display.<br>
+      échelon, roue libre.<br>
       <b>B</b> = chaîne montée + home trainer, résistance au maximum — charge, couple,
-      pic, endurance, coupure. <b>Deux blocs</b> séparés par un réarmement, toujours
-      à cause de cette limite de 120 s.<br>
+      pic, endurance, coupure. Un seul bloc (display 2.18.6 : budget de marche
+      300 s).<br>
       L'enregistrement JSONL démarre et se télécharge automatiquement (champ
       <code>bset</code> = consigne envoyée).
     </div>
@@ -207,7 +207,7 @@
   <div class="hint">
     Séquence : <b>Armer</b> → le display affiche l'écran de confirmation → appuyez
     <b>M</b> puis <b>▲</b> sur le display → <b>Appliquer</b>. Le moteur s'arrête seul si le
-    keep-alive s'interrompt plus de 2 s, au bout de 120 s de marche, au freinage, ou
+    keep-alive s'interrompt plus de 2 s, au bout de 300 s de marche, au freinage, ou
     sur le bouton ON/OFF du display — et le panneau se désarme alors tout seul, en
     affichant la cause (display 2.18.3 ou plus récent).
     Un <b>⏳</b> à côté de la consigne signifie qu'elle est bridée par l'anti-emballement :
@@ -735,7 +735,7 @@ async function trainerResistancePct(pct){
    desormais par le MODE BANC — le dashboard impose une consigne de duty, le
    moteur tourne seul, l'operateur ne touche a rien.
 
-   ⚠ CONTRAINTE DURE — 120 s de marche. Le display coupe apres
+   ⚠ CONTRAINTE DURE — 300 s de marche (display >= 2.18.6). Le display coupe apres
    BENCH_RUN_TIMEOUT_TICKS de marche CONTINUE. Le decompte demarre a la
    PREMIERE consigne > 0 et ne se reinitialise jamais. D'ou :
    - les etapes a duty 0 n'envoient qu'un keep-alive (sous-cmd 3), elles ne
@@ -864,7 +864,7 @@ const PROTO_A=[
     if(dt>1.5) return vATT('montée en '+dt.toFixed(2)+' s — lente à vide (résolution ±0,3 s)');
     return vOK('montée en '+dt.toFixed(2)+' s jusqu’à '+mx(col(ss,'erps'))+' ERPS'); }},
 
- {id:'A8',title:'Coupure et roue libre',duty:t=>(t<4?40:0),ramp:250,stepChange:true,dur:12,
+ {id:'A8',title:'Coupure et roue libre',duty:t=>(t<4?40:0),ramp:30,dur:12,
   instr:"Coupure nette après 4 s. Le rotor doit ralentir librement — une décroissance anormalement rapide trahit un frottement ou un court de phase.",
   check(ss){ const g=errGate(ss); if(g) return g;
     let cutAt=null, stopAt=null, peak=0;
@@ -928,12 +928,11 @@ const PROTO_B=[
     if(c>150) return vKO(det+' — courant au-dessus du plafond');
     return vOK(det); }},
 
- {id:'B5',title:'Fin du bloc 1 — réarmement',dur:0,rearm:true,
-  instr:"Bloc 1 terminé — le mode banc est désarmé (le display coupe après 120 s de marche continue). <b>Laissez le home trainer s’arrêter complètement</b>, puis, quand le display affiche l’écran de confirmation, appuyez <b>M</b> puis <b>▲</b>. Le dashboard redemande l’armement tout seul, vous n’avez que la confirmation à faire — si l’écran repasse en demande, reconfirmez.",
-  wait:{label:'En attente du réarmement sur le display…',cond:()=>!!(bench&&bench.engagedSeen)},
-  check(){ return vOK('bloc 1 terminé, mode banc réarmé'); }},
-
- {id:'B6',title:'Endurance',duty:40,ramp:20,settle:5,dur:75,res:100,
+ /* Plus de rearmement intermediaire : le budget de marche du display est
+    passe de 120 a 300 s en 2.18.6 — la phase B tient d'un seul trait
+    (~180 s de rotation). Avec un display < 2.18.6, le mode coupera a 120 s
+    en pleine endurance : flasher d'abord. */
+ {id:'B5',title:'Endurance',duty:40,ramp:20,settle:5,dur:75,res:100,
   instr:"Palier long sous charge. On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const h=Math.floor(ss.length/2);
@@ -946,7 +945,7 @@ const PROTO_B=[
     if(de<-0.15) return vATT(det+' — le régime s’effondre à consigne constante');
     return vOK(det+' — stable'); }},
 
- {id:'B7',title:'Coupure sous charge',duty:t=>(t<5?45:0),ramp:250,stepChange:true,dur:12,res:100,
+ {id:'B6',title:'Coupure sous charge',duty:t=>(t<5?45:0),ramp:20,dur:12,res:100,
   instr:"Coupure nette sous charge. Le duty doit retomber immédiatement — c’est le comportement mis en cause par l’over-run constaté sur route.",
   check(ss){ const g=errGate(ss); if(g) return g;
     let cutAt=null, zeroAt=null;
@@ -1141,14 +1140,18 @@ function protoTick(){
   const tot =p.steps.reduce((a,x)=>a+x.dur,0);
   $('pBarTot').style.width   = Math.min(100,(done+Math.min(el,st.dur))/tot*100)+'%';
 
-  /* Budget des 120 s de marche continue : on le montre AVANT que le display ne
-     coupe au milieu d'une mesure. Le decompte demarre a la premiere consigne
-     > 0 et le display ne le remet jamais a zero. */
+  /* Budget de marche continue : on previent AVANT que le display ne coupe au
+     milieu d'une mesure. Source de verite = le decompte que le DISPLAY
+     rapporte (0x06, runtime en ticks de 100 ms) — c'est lui qui coupera.
+     Repli local 300 s (2.18.6) si la trame manque. */
   let chip = st.res!=null ? 'résistance '+st.res+' %' : '';
-  if(p.runStart){
-    const left = Math.max(0, 120-(Date.now()-p.runStart)/1000);
-    if(left < 30) chip = (chip?chip+'  ·  ':'')+'⚠ '+left.toFixed(0)+' s avant coupure display';
-  }
+  let left = null;
+  if(benchAck && bench && bench.engagedSeen && Date.now()-benchAck.at < 3000 && benchAck.runtime)
+    left = benchAck.runtime/10;
+  else if(p.runStart)
+    left = Math.max(0, 300-(Date.now()-p.runStart)/1000);
+  if(left != null && left < 45)
+    chip = (chip?chip+'  ·  ':'')+'⚠ '+left.toFixed(0)+' s avant coupure display';
   $('pRes').hidden = !chip; $('pRes').textContent = chip;
 
   if(p.state==='running' && el>=st.dur){ p.state='timed-out'; nextStep(); }
@@ -1211,7 +1214,7 @@ $('btnProtoCopy').onclick=async()=>{
        fait qu'afficher l'écran : le dashboard ne peut JAMAIS lancer le moteur seul ;
      · dead-man 2,0 s — si ce keep-alive s'interrompt, le moteur s'arrête ;
      · plafond de duty 60 % à vide / 90 % en charge, appliqué par le display.
-   Plus : timeout 120 s de marche, frein et ON/OFF = arrêt immédiat.
+   Plus : timeout 300 s de marche (2.18.6), frein et ON/OFF = arrêt immédiat.
 --------------------------------------------------------------------------- */
 const BENCH_MAX = {0:152, 1:229};          // plafonds display, en duty 0..254
 const D2P = d => Math.round(d*100/254);    // duty -> %
@@ -1304,8 +1307,14 @@ async function benchTick(){
       // rampe logicielle : au plus (rampe %/s) × durée du tick
       const rampPct = (b.rampOverride != null) ? b.rampOverride : +$('benchRamp').value;
       const stepD = Math.max(1, P2D(rampPct)*BENCH_TICK/1000);
+      /* La rampe ne s'applique qu'a la MONTEE. Descendre est toujours sur
+         (pas de regen, le moteur decroche en roue libre) et les mesures de
+         coupure (A8/B7) exigent une chute de consigne instantanee — c'est ce
+         qui permet de se passer de stepChange sur ces etapes, donc de ramper
+         leur montee : le coup de 500 W ressenti au banc du 2026-07-24 etait
+         la montee 0->45 % d'un seul echelon de B7. */
       if(b.sentD < b.targetD)      b.sentD = Math.min(b.targetD, b.sentD+stepD);
-      else if(b.sentD > b.targetD) b.sentD = Math.max(b.targetD, b.sentD-stepD);
+      else if(b.sentD > b.targetD) b.sentD = b.targetD;
       /* ANTI-EMBALLEMENT — la consigne ne peut jamais devancer de plus de
          BENCH_SLACK ce que le moteur applique réellement. Deux cas couverts :
          · « Appliquer » pressé AVANT la confirmation physique sur le display :
