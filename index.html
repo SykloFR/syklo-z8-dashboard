@@ -99,7 +99,7 @@
   <div class="tile" id="trainerTile"><div class="l">Puissance roue</div><div class="v" id="vPmeca">–</div><div class="u" id="vTrainerSrc">home trainer</div></div>
   <div class="tile"><div class="l">Ratio roue/batt.</div><div class="v" id="vRatio">–</div><div class="u">inclut l'apport cycliste</div></div>
   <div class="tile"><div class="l">Tension moteur</div><div class="v" id="vVolt">–</div><div class="u">V (remontée moteur)</div></div>
-  <div class="tile" id="aweTile"><div class="l">Assist w/ error</div><div class="v" id="vAwe">–</div><div class="u">requis en phase A</div></div>
+  <div class="tile" id="aweTile"><div class="l">Assist w/ error</div><div class="v" id="vAwe">–</div><div class="u">🔴 à couper avant la route</div></div>
   <div class="tile" id="streetTile"><div class="l">Street mode</div><div class="v" id="vStreet">–</div><div class="u" id="vStreetLim"></div></div>
   <div class="tile"><div class="l">Vitesse roue</div><div class="v" id="vSpeed">–</div><div class="u">km/h</div></div>
   <div class="tile"><div class="l">Niveau assist</div><div class="v" id="vLvl">–</div><div class="u" id="vMode"></div></div>
@@ -117,15 +117,21 @@
 <div class="proto">
   <div id="protoIdle">
     <div class="bar" style="margin-bottom:6px">
-      <button id="btnProtoA">▶ Phase A — moteur à blanc (~4 min)</button>
-      <button id="btnProtoB">▶ Phase B — banc en charge (~6 min)</button>
+      <button id="btnProtoA">▶ Phase A — moteur seul, chaîne déposée (~2 min)</button>
+      <button id="btnProtoB">▶ Phase B — banc en charge (2 blocs, ~4 min)</button>
     </div>
     <div class="hint">
-      <b>A</b> = chaîne DÉPOSÉE, moteur libre — diagnostic rapide avant montage (capteurs,
-      démarrages, haut régime, sprints).
-      <b>B</b> = chaîne montée + home trainer — caractérisation en charge (la résistance du
-      trainer est pilotée automatiquement si le contrôle FTMS est disponible).
-      L'enregistrement JSONL démarre et se télécharge automatiquement.
+      Les deux phases pilotent le moteur par le <b>mode banc</b> : aucun pédalage,
+      c'est le dashboard qui impose la consigne de duty. <b>Armez le mode banc
+      d'abord</b> (panneau ci-dessous), le protocole fait le reste.<br>
+      <b>A</b> = chaîne DÉPOSÉE — diagnostic avant montage : capteurs au repos et au
+      pédalier, décollage, paliers croissants, haut régime, démarrages répétés,
+      échelon, roue libre. Tient dans les 120 s de marche autorisées par le display.<br>
+      <b>B</b> = chaîne montée + home trainer, résistance au maximum — charge, couple,
+      pic, endurance, coupure. <b>Deux blocs</b> séparés par un réarmement, toujours
+      à cause de cette limite de 120 s.<br>
+      L'enregistrement JSONL démarre et se télécharge automatiquement (champ
+      <code>bset</code> = consigne envoyée).
     </div>
   </div>
   <div id="protoRun" hidden>
@@ -322,13 +328,9 @@ function handle02(dv) {
   aweOn = ((dv.getUint8(10) - 1) >> 1) & 1;
   $('vAwe').textContent = aweOn ? 'ACTIF' : 'off';
   $('aweTile').classList.toggle('bad', !aweOn);
-  // reflet direct sur le bouton Phase A (hors test en cours)
-  if(!proto){
-    const b=$('btnProtoA');
-    b.disabled = !aweOn;
-    b.textContent = aweOn ? '▶ Phase A — moteur à blanc (~4 min)'
-                          : '▶ Phase A — activez « Assist with error » au menu';
-  }
+  // Le mode banc ne depend plus de « assist with error » : le moteur tourne en
+  // mode calibration, et le patch P10 empeche E08 d'y tomber. La tuile reste
+  // affichee a titre informatif — le mode est DANGEREUX sur route.
   const b11 = dv.getUint8(11) - 1;
   curStreet = (b11 >> 4) & 1;                           // street actif
   $('vPow').textContent = curPower;
@@ -660,142 +662,236 @@ async function trainerResistancePct(pct){
 }
 
 /* ---------------------------------------------------------------------------
-   PROTOCOLE DE TEST GUIDE — deux phases decouplees.
-   A : moteur A BLANC (chaine deposee) — diagnostic rapide avant montage.
-   B : banc EN CHARGE (chaine + trainer) — caracterisation globale.
-   Chaque etape : instruction, condition de depart (le chrono ne part que quand
-   l'operateur fait ce qui est demande), duree fixe, verdict calcule sur les
-   echantillons de l'etape. Enregistrement automatique (champ stp du JSONL).
-   Seuils issus des baselines terrain 2026-07-22 (moteur 48V sain) :
-   couple a vide 120-250 ADC, cap courant 143 ADC (23 A), ERPS max observe 276.
+   PROTOCOLES PILOTES PAR DUTY (v2 — 2026-07-24)
+
+   Les versions precedentes demandaient de pedaler. C'etait sans objet chaine
+   deposee : sans resistance au plateau, le capteur de couple ne mesure rien,
+   donc aucune assistance n'est demandee et il n'y a rien a mesurer. Tout passe
+   desormais par le MODE BANC — le dashboard impose une consigne de duty, le
+   moteur tourne seul, l'operateur ne touche a rien.
+
+   ⚠ CONTRAINTE DURE — 120 s de marche. Le display coupe apres
+   BENCH_RUN_TIMEOUT_TICKS de marche CONTINUE. Le decompte demarre a la
+   PREMIERE consigne > 0 et ne se reinitialise jamais. D'ou :
+   - les etapes a duty 0 n'envoient qu'un keep-alive (sous-cmd 3), elles ne
+     consomment donc pas le budget tant qu'aucune rotation n'a eu lieu ;
+   - la phase A tient en une seule seance (~88 s de rotation) ;
+   - la phase B est decoupee en deux blocs, separes par un rearmement physique.
+
+   ⚠ REFERENCES ABSENTES. Il n'existe pas encore de reference duty -> ERPS a
+   vide : les baselines terrain (ERPS max 276, cap courant 143 ADC) ont ete
+   relevees en assistance, sous charge. Les verdicts de la phase A sont donc
+   RELATIFS (monotonie, repetabilite, absence d'erreur) et les valeurs absolues
+   sont journalisees pour CONSTITUER la reference. Le premier run fait
+   l'etalon ; les suivants se comparent a lui.
+
+   Champs d'une etape :
+     duty    consigne en %, ou fonction (t) => % pour un profil dans l'etape
+     ramp    pente d'approche en %/s (surcharge le selecteur de l'ecran)
+     settle  s d'etablissement avant de commencer a mesurer
+     dur     s de mesure
+     res     consigne de resistance du home trainer en %
+     manual  etape sans pilotage : l'operateur agit, moteur a l'arret
+     rearm   fin de bloc : on desarme, l'operateur doit rearmer physiquement
 --------------------------------------------------------------------------- */
 const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
 const mx=a=>a.length?Math.max(...a):0, mn=a=>a.length?Math.min(...a):0;
 const col=(ss,k)=>ss.map(x=>x[k]).filter(v=>v!=null);
-// E08 (bit 7) est masque du critere d'echec : chaine deposee la roue ne tourne
-// pas, l'erreur est structurelle. Les autres bits restent bloquants.
-function ckErr(ss){ return ss.every(x=>!(x.err & 0x7F)); }
-function hasE08(ss){ return ss.some(x=>x.err & 0x80); }
-// erreurs (hors E08) vues pendant l'etape, pour un message explicite
-function errSeen(ss){ let m=0; for(const x of ss) m|=(x.err||0); return m & 0x7F; }
+const sdev=a=>{ const m=mean(a); return Math.sqrt(mean(a.map(x=>(x-m)*(x-m)))); };
+// En mode banc la roue ne tourne pas (chaine deposee) : E08 serait structurel.
+// Le patch moteur P10 (v1.0.2) l'inhibe en mode calibration — s'il apparait
+// quand meme, c'est que le moteur n'est pas en 1.0.2, et il faut le signaler.
+function ckErr(ss){ return ss.every(x=>!x.err); }
+function errSeen(ss){ let m=0; for(const x of ss) m|=(x.err||0); return m; }
 function errWhy(ss){ const m=errSeen(ss); return m ? errTxt(m) : ''; }
+function hasE08(ss){ return ss.some(x=>x.err & 0x80); }
 function vOK(d){return{v:'OK',d};} function vATT(d){return{v:'ATT',d};} function vKO(d){return{v:'KO',d};}
+// Verdict commun a toute etape pilotee : une erreur moteur invalide la mesure.
+function errGate(ss){
+  if(!ss.length) return vKO('aucun échantillon');
+  if(ckErr(ss)) return null;
+  const w = errWhy(ss);
+  return vKO(hasE08(ss)
+    ? w+' — E08 en mode banc = le moteur n’est pas en 1.0.2 (patch P10)'
+    : w);
+}
+// Courant ADC -> ampères (0,16 A par pas, cf. baselines terrain)
+const A = c => (c*0.16).toFixed(1);
 
 const PROTO_A=[
- {id:'A1',title:'Capteurs au repos',dur:20,res:null,
-  instr:"Ne touchez à <b>rien</b> — mains hors des pédales, moteur immobile. (E08 est toléré pendant toute la phase A : roue immobile, chaîne déposée.)",
-  check(ss){ const t=col(ss,'torque'); if(!t.length) return vKO('aucune donnée');
-    const m=mean(t), sp=mx(t)-mn(t);
-    if(!ckErr(ss)) return vKO(errWhy(ss));
+ {id:'A1',title:'Capteurs au repos',dur:12,duty:0,
+  instr:"Ne touchez à <b>rien</b>. Le moteur reste à l’arrêt — on relève l’offset du capteur de couple et le bruit de mesure.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    const t=col(ss,'torque'), m=mean(t), sp=mx(t)-mn(t);
+    proto.torqueOffset=m;
     if(m<120||m>250) return vKO('offset couple '+m.toFixed(0)+' hors famille 120-250');
     if(sp>15) return vATT('offset couple instable (écart '+sp+')');
     if(mx(col(ss,'cur'))>6) return vATT('courant non nul au repos');
-    return vOK('offset '+m.toFixed(0)+', stable, courant nul'); }},
- {id:'A2',title:'Couple & cadence',dur:30,res:null,
-  wait:{label:'Tournez les manivelles pour démarrer l’étape…',cond:d=>d.cad>5},
-  instr:"<b>Niveau 0</b> (assistance coupée) — tournez les manivelles à la main, en forçant par à-coups sur la pédale.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
+    return vOK('offset '+m.toFixed(0)+', stable (écart '+sp+'), courant nul'); }},
+
+ {id:'A2',title:'Capteurs de pédalier (manuel)',dur:20,duty:0,manual:true,
+  instr:"<b>À la main</b> : tournez les manivelles plusieurs tours, puis appuyez fort sur une pédale en retenant l’autre. Le moteur ne tourne pas.",
+  check(ss){ const g=errGate(ss); if(g) return g;
     const dmax=mx(col(ss,'delta')), cadOk=ss.filter(x=>x.cad>0).length/ss.length;
-    if(dmax<20) return vKO('capteur de couple ne répond pas (delta max '+dmax+')');
-    if(cadOk<0.5) return vATT('cadence détectée sur seulement '+Math.round(cadOk*100)+'% du temps');
-    return vOK('delta max '+dmax+', cadence OK'); }},
- {id:'A3',title:'Démarrages multiples',dur:60,res:null,
-  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
-  instr:"<b>Niveau 2</b> — enchaînez <b>6 démarrages</b> : pédalez 4 s, arrêt complet 4 s, répétez.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
+    // Sans resistance au plateau le couple reste faible : on verifie que le
+    // capteur REPOND, pas qu'il atteint une valeur donnee.
+    if(cadOk<0.05) return vKO('capteur de cadence muet (aucune rotation détectée)');
+    if(cadOk<0.20) return vATT('cadence détectée sur seulement '+Math.round(cadOk*100)+'% du temps — pédalez plus longtemps pour conclure');
+    if(dmax<10)   return vKO('capteur de couple muet (delta max '+dmax+')');
+    if(dmax<25)   return vATT('couple faible (delta max '+dmax+') — normal sans résistance, vérifier en phase B');
+    return vOK('cadence détectée sur '+Math.round(cadOk*100)+'% du temps, delta couple max '+dmax); }},
+
+ {id:'A3',title:'Décollage',duty:20,ramp:8,dur:8,
+  instr:"Le moteur monte <b>doucement</b> jusqu’à 20 %. On cherche le seuil de duty auquel le rotor décolle.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    let takeoff=null;
+    for(const x of ss) if(takeoff==null && x.erps>5 && x.bset!=null) takeoff=x.bset;
+    const e=mx(col(ss,'erps'));
+    if(!e) return vKO('le rotor n’a pas tourné (ERPS resté nul à 20 % de duty)');
+    proto.takeoff=takeoff;
+    return vOK('décollage à '+(takeoff!=null?D2P(takeoff)+' % de duty':'?')+', ERPS max '+e); }},
+
+ {id:'A4a',title:'Palier 25 %',duty:25,ramp:20,settle:2,dur:5,instr:"Palier stabilisé — mesure du régime et du courant à vide.",check:ckPlateau},
+ {id:'A4b',title:'Palier 35 %',duty:35,ramp:20,settle:2,dur:5,instr:"Palier stabilisé.",check:ckPlateau},
+ {id:'A4c',title:'Palier 45 %',duty:45,ramp:20,settle:2,dur:5,instr:"Palier stabilisé.",check:ckPlateau},
+ {id:'A4d',title:'Palier 55 %',duty:55,ramp:20,settle:2,dur:5,instr:"Dernier palier — le verdict porte sur la <b>cohérence de la série</b>.",
+  check(ss){ const r=ckPlateau(ss); if(r.v==='KO') return r;
+    // Verdict transversal : c'est la SERIE qui doit etre coherente, chaque
+    // palier isole ne dit rien tant qu'on n'a pas de reference absolue.
+    const p=proto.plateaus||[];
+    if(p.length<3) return vATT(r.d+' — série incomplète');
+    let mono=true; for(let i=1;i<p.length;i++) if(p[i].erps <= p[i-1].erps*1.02) mono=false;
+    const det=p.map(x=>x.duty+'%→'+x.erps.toFixed(0)+' ERPS/'+A(x.cur)+' A').join(' · ');
+    if(!mono) return vKO('régime non croissant avec le duty : '+det);
+    return vOK(det+' — série croissante et régulière'); }},
+
+ {id:'A5',title:'Haut régime',duty:60,ramp:20,settle:3,dur:8,
+  instr:"Plafond à vide (60 %). Régime maximal — c’est ici qu’un défaut de capteur Hall ou de commutation se voit.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    const e=mx(col(ss,'erps')), c=mx(col(ss,'cur'));
+    const halls=new Set(col(ss,'hall')); const es=col(ss,'erps');
+    proto.erpsMax=e;
+    if(halls.size<6) return vATT('seulement '+halls.size+' états Hall vus sur 6 — capteur ou commutation à vérifier');
+    const jitter=sdev(es)/Math.max(1,mean(es));
+    if(jitter>0.08) return vATT('régime instable à plein duty (±'+(jitter*100).toFixed(0)+'%) — ERPS max '+e);
+    return vOK('ERPS max '+e+', 6 états Hall, régime stable, courant max '+A(c)+' A'); }},
+
+ {id:'A6',title:'Démarrages répétés',duty:t=>(t%7<3.5?30:0),ramp:60,dur:21,
+  instr:"Trois cycles <b>marche / arrêt</b> automatiques. Le moteur doit repartir à chaque fois, sans à-coup ni blocage.",
+  check(ss){ const g=errGate(ss); if(g) return g;
     let starts=0, low=true;
-    for(const x of ss){ if(low && x.erps>40){starts++; low=false;} if(!low && x.erps<20) low=true; }
-    if(starts<4) return vATT(starts+' démarrages détectés (attendu ≥5) — refaire si doute');
-    return vOK(starts+' démarrages, le moteur repart à chaque fois'); }},
- {id:'A4',title:'Montée progressive',dur:50,res:null,
-  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
-  instr:"Pédalage <b>régulier</b> — montez d’un niveau toutes les <b>10 s</b> : L1 → L5.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
-    const byLvl={}; for(const x of ss) if(x.lvl!=null&&x.cur!=null){(byLvl[x.lvl]=byLvl[x.lvl]||[]).push(x.cur);}
-    const lvls=Object.keys(byLvl).map(Number).sort((a,b)=>a-b);
-    if(lvls.length<3) return vATT('seulement '+lvls.length+' niveau(x) vu(s) — montée non testée');
-    let mono=true, prev=-1;
-    for(const l of lvls){ const m=mean(byLvl[l]); if(m<prev*0.8) mono=false; prev=m; }
-    return mono?vOK(lvls.length+' niveaux, courant croissant'):vATT('courant non croissant avec le niveau'); }},
- {id:'A5',title:'Haut régime',dur:30,res:null,
-  wait:{label:'Accélérez pour démarrer l’étape…',cond:d=>d.erps>150},
-  instr:"<b>Niveau 5</b> — pédalez vite, atteignez le régime <b>maximal</b> (roue libre).",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
-    const e=mx(col(ss,'erps')), du=mx(col(ss,'duty'));
-    if(e<180) return vKO('ERPS max '+e+' — régime anormalement bas');
-    if(e<230) return vATT('ERPS max '+e+' (attendu ≥230 à vide)');
-    return vOK('ERPS max '+e+', duty max '+du); }},
- {id:'A6',title:'Sprints (rampes rapides)',dur:30,res:null,
-  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
-  instr:"<b>Niveau 5</b> — <b>3 sprints violents</b> de 3-4 s, relâchez entre chaque.",
-  check(ss){ const c=mx(col(ss,'cur'));
-    if(!ckErr(ss)) return vKO(errWhy(ss));
-    if(c>150) return vKO('courant '+(c*0.16).toFixed(1)+' A au-dessus du plafond attendu');
-    let peaks=0, lo=true; for(const x of ss){ if(lo&&x.cur>60){peaks++;lo=false;} if(!lo&&x.cur<25) lo=true; }
-    if(peaks<2) return vATT(peaks+' pic(s) détecté(s) — sprints trop timides ?');
-    return vOK(peaks+' pics, courant max '+(c*0.16).toFixed(1)+' A, régulation tient'); }},
+    for(const x of ss){ if(low && x.erps>30){starts++; low=false;} if(!low && x.erps<10) low=true; }
+    if(starts<3) return vKO(starts+' démarrage(s) sur 3 — le moteur ne repart pas systématiquement');
+    return vOK(starts+' démarrages sur 3, courant de pointe '+A(mx(col(ss,'cur')))+' A'); }},
+
+ {id:'A7',title:'Échelon rapide',duty:t=>(t<2?0:50),ramp:250,stepChange:true,dur:10,
+  instr:"Passage <b>brutal</b> de 0 à 50 %. On mesure le temps de montée en régime.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    const t0=ss[0].t; let stepAt=null, reach=null;
+    const target=mx(col(ss,'erps'))*0.9;
+    for(const x of ss){ if(stepAt==null && x.bset>10) stepAt=x.t;
+      if(stepAt!=null && reach==null && x.erps>=target) reach=x.t; }
+    if(stepAt==null) return vKO('échelon non appliqué');
+    if(reach==null)  return vKO('le régime n’a jamais atteint 90 % de sa valeur maximale');
+    const dt=(reach-stepAt)/1000; proto.riseTime=dt;
+    // Resolution reelle : consigne toutes les 500 ms, telemetrie a 5 Hz — on ne
+    // mesure pas mieux que ~0,3 s. Le seuil ne juge donc qu'un defaut franc.
+    if(dt>1.5) return vATT('montée en '+dt.toFixed(2)+' s — lente à vide (résolution ±0,3 s)');
+    return vOK('montée en '+dt.toFixed(2)+' s jusqu’à '+mx(col(ss,'erps'))+' ERPS'); }},
+
+ {id:'A8',title:'Coupure et roue libre',duty:t=>(t<4?40:0),ramp:250,stepChange:true,dur:12,
+  instr:"Coupure nette après 4 s. Le rotor doit ralentir librement — une décroissance anormalement rapide trahit un frottement ou un court de phase.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    let cutAt=null, stopAt=null, peak=0;
+    for(const x of ss){ peak=Math.max(peak,x.erps);
+      if(cutAt==null && x.bset===0 && peak>20) cutAt=x.t;
+      if(cutAt!=null && stopAt==null && x.erps<5) stopAt=x.t; }
+    if(cutAt==null) return vKO('coupure non appliquée');
+    if(stopAt==null) return vATT('le rotor tournait encore en fin d’étape (roue libre longue, plutôt bon signe)');
+    const dt=(stopAt-cutAt)/1000; proto.coastTime=dt;
+    if(dt<0.5) return vATT('arrêt en '+dt.toFixed(2)+' s depuis '+peak+' ERPS — très brusque, vérifier les frottements');
+    return vOK('arrêt libre en '+dt.toFixed(2)+' s depuis '+peak+' ERPS'); }},
 ];
 
+// Verdict d'un palier : enregistre la mesure ET la range dans proto.plateaus,
+// que l'etape A4d relit pour juger la coherence de la serie.
+function ckPlateau(ss){
+  const g=errGate(ss); if(g) return g;
+  const es=col(ss,'erps'), cs=col(ss,'cur'), bs=col(ss,'bset');
+  const e=mean(es), c=mean(cs), d=D2P(mean(bs));
+  (proto.plateaus=proto.plateaus||[]).push({duty:d, erps:e, cur:c});
+  const jitter=sdev(es)/Math.max(1,e);
+  if(!e) return vKO('rotor immobile à '+d+' % de duty');
+  if(jitter>0.10) return vATT(d+' % → '+e.toFixed(0)+' ERPS instable (±'+(jitter*100).toFixed(0)+'%), '+A(c)+' A');
+  return vOK(d+' % → '+e.toFixed(0)+' ERPS, '+A(c)+' A');
+}
+
 const PROTO_B=[
- {id:'B1',title:'Mise en place',dur:15,res:30,
-  instr:"Chaîne montée, <b>braquet médian FIXE</b> (ne plus changer de vitesse pendant tout le test). Ne pédalez pas.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
+ {id:'B1',title:'Mise en place',dur:10,duty:0,res:100,
+  instr:"Chaîne montée, <b>braquet médian FIXE</b> (ne plus changer de vitesse). Résistance du trainer au <b>maximum</b>. Ne touchez pas aux pédales.",
+  check(ss){ const g=errGate(ss); if(g) return g;
     proto.baseVolt=mean(col(ss,'voltX10'));
     if(mx(col(ss,'cur'))>6) return vATT('courant non nul à l’arrêt');
-    return vOK('repos OK, tension '+(proto.baseVolt/10).toFixed(1)+' V'); }},
- {id:'B2',title:'Palier modéré',dur:60,res:50,
-  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
-  instr:"<b>Niveau 3</b> — cadence régulière <b>60-70 rpm</b>.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
-    const p=col(ss,'pow').filter(x=>x>0), pm=col(ss,'pmeca').filter(x=>x>0);
-    if(!p.length) return vATT('puissance batterie non lue (paquet 0x02 absent ?)');
-    const r=[]; for(const x of ss) if(x.pow>50&&x.pmeca>0) r.push(x.pmeca/x.pow);
-    let det='Pbatt moy '+mean(p).toFixed(0)+' W';
-    if(pm.length) det+=', Proue moy '+mean(pm).toFixed(0)+' W';
-    if(r.length>5){ const rm=mean(r), sd=Math.sqrt(mean(r.map(x=>(x-rm)*(x-rm))));
-      det+=', ratio '+rm.toFixed(2)+'±'+sd.toFixed(2);
-      if(sd/rm>0.35) return vATT(det+' — ratio instable'); }
+    return vOK('repos OK, tension à vide '+(proto.baseVolt/10).toFixed(1)+' V'); }},
+
+ {id:'B2',title:'Montée en charge',duty:35,ramp:8,settle:5,dur:15,res:100,
+  instr:"Montée progressive à 35 % contre la résistance maximale. La chaîne se tend — restez à l’écart.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    const c=mean(col(ss,'cur')), p=col(ss,'pow').filter(x=>x>0), pm=col(ss,'pmeca').filter(x=>x>0);
+    let det='courant moy '+A(c)+' A';
+    if(p.length)  det+=', Pbatt '+mean(p).toFixed(0)+' W';
+    if(pm.length) det+=', Proue '+mean(pm).toFixed(0)+' W';
+    if(c<20) return vATT(det+' — charge faible, la résistance du trainer suffit-elle ?');
     return vOK(det); }},
- {id:'B3',title:'Couple maximal',dur:60,res:100,
-  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
-  instr:"<b>RÉSISTANCE MAX</b> — <b>Niveau 5</b>, cadence <b>basse</b>, forcez comme dans une côte raide. C’est l’étape qui fait vraiment travailler le moteur.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
+
+ {id:'B3',title:'Palier de couple',duty:45,ramp:20,settle:5,dur:25,res:100,
+  instr:"Palier soutenu — c’est l’étape qui fait vraiment travailler le moteur. Surveillez la température du carter à la main <b>après</b> le test.",
+  check(ss){ const g=errGate(ss); if(g) return g;
     const c=mx(col(ss,'cur')), sag=proto.baseVolt?(proto.baseVolt-mn(col(ss,'voltX10'))):null;
-    if(c>150) return vKO('courant '+(c*0.16).toFixed(1)+' A au-dessus du plafond');
-    let det='courant max '+(c*0.16).toFixed(1)+' A';
+    let det='courant max '+A(c)+' A';
     if(sag!=null) det+=', sag '+(sag/10).toFixed(1)+' V';
-    if(c<100) return vATT(det+' — moteur pas assez chargé (résistance insuffisante ?)');
+    if(c>150) return vKO(det+' — au-dessus du plafond attendu');
     if(sag!=null&&sag>60) return vATT(det+' — sag batterie élevé');
+    if(c<60) return vATT(det+' — moteur peu chargé, résistance insuffisante');
     return vOK(det+', régulation au cap'); }},
- {id:'B4',title:'Pic de puissance',dur:25,res:100,
-  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
-  instr:"<b>Sprint maximal</b> 5-10 s, puis maintenez l’effort. Résistance toujours au max.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
-    const p=mx(col(ss,'pow')), c=mx(col(ss,'cur'));
-    if(c>150) return vKO('courant au-dessus du plafond');
-    let det='Pbatt max '+p+' W, courant max '+(c*0.16).toFixed(1)+' A';
-    if(p<600) return vATT(det+' — pic faible (attendu ≥700 W en 48V)');
+
+ {id:'B4',title:'Pic de puissance',duty:60,ramp:60,settle:3,dur:15,res:100,
+  instr:"Montée brutale à 60 % sous charge maximale. Pic de courant et de puissance.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    const c=mx(col(ss,'cur')), p=mx(col(ss,'pow'));
+    let det='Pbatt max '+p+' W, courant max '+A(c)+' A';
+    if(c>150) return vKO(det+' — courant au-dessus du plafond');
     return vOK(det); }},
- {id:'B5',title:'Endurance',dur:90,res:80,
-  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
-  instr:"<b>Niveau 4</b> — effort <b>soutenu et constant</b> pendant 90 s. Ne relâchez pas.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
-    const h=Math.floor(ss.length/2), c1=mean(col(ss.slice(0,h),'cur')), c2=mean(col(ss.slice(h),'cur'));
-    const drift=c1>5?Math.abs(c2-c1)/c1:0;
-    let det='courant moy '+((c1+c2)/2*0.16).toFixed(1)+' A, dérive '+(drift*100).toFixed(0)+'%';
-    if(drift>0.25) return vATT(det+' — effort irrégulier ou dérive moteur');
-    return vOK(det); }},
- {id:'B6',title:'Coupure nette',dur:15,res:50,
-  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
-  instr:"Pédalez 5 s puis <b>STOP NET</b> — ne touchez plus les pédales jusqu’à la fin du chrono.",
-  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
-    let lastPedal=null, cut=null;
-    for(const x of ss){ if(x.cad>5) lastPedal=x.t; else if(lastPedal&&cut==null&&x.duty<10) cut=x.t; }
-    if(!lastPedal) return vATT('pédalage non détecté');
-    if(cut==null) return vKO('le duty n’est jamais redescendu après l’arrêt (over-run !)');
-    const dt=(cut-lastPedal)/1000;
-    if(dt>2.5) return vATT('coupure en '+dt.toFixed(1)+' s — lent');
-    return vOK('coupure en '+dt.toFixed(1)+' s après arrêt du pédalage'); }},
+
+ {id:'B5',title:'Fin du bloc 1 — réarmement',dur:0,rearm:true,
+  instr:"Bloc 1 terminé — le mode banc est désarmé (le display coupe après 120 s de marche continue). <b>Laissez le home trainer s’arrêter complètement</b>, puis, quand le display affiche l’écran de confirmation, appuyez <b>M</b> puis <b>▲</b>. Le dashboard redemande l’armement tout seul, vous n’avez que la confirmation à faire — si l’écran repasse en demande, reconfirmez.",
+  wait:{label:'En attente du réarmement sur le display…',cond:()=>!!(bench&&bench.engagedSeen)},
+  check(){ return vOK('bloc 1 terminé, mode banc réarmé'); }},
+
+ {id:'B6',title:'Endurance',duty:40,ramp:20,settle:5,dur:75,res:100,
+  instr:"Palier long sous charge. On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    const h=Math.floor(ss.length/2);
+    const c1=mean(col(ss.slice(0,h),'cur')), c2=mean(col(ss.slice(h),'cur'));
+    const e1=mean(col(ss.slice(0,h),'erps')), e2=mean(col(ss.slice(h),'erps'));
+    const dc=c1>5?(c2-c1)/c1:0, de=e1>5?(e2-e1)/e1:0;
+    const det='courant '+A(c1)+'→'+A(c2)+' A ('+(dc*100).toFixed(0)+'%), régime '
+      +e1.toFixed(0)+'→'+e2.toFixed(0)+' ERPS ('+(de*100).toFixed(0)+'%)';
+    if(dc>0.20) return vATT(det+' — le courant dérive, échauffement probable');
+    if(de<-0.15) return vATT(det+' — le régime s’effondre à consigne constante');
+    return vOK(det+' — stable'); }},
+
+ {id:'B7',title:'Coupure sous charge',duty:t=>(t<5?45:0),ramp:250,stepChange:true,dur:12,res:100,
+  instr:"Coupure nette sous charge. Le duty doit retomber immédiatement — c’est le comportement mis en cause par l’over-run constaté sur route.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    let cutAt=null, zeroAt=null;
+    for(const x of ss){ if(cutAt==null && x.bset===0) cutAt=x.t;
+      if(cutAt!=null && zeroAt==null && x.duty<10) zeroAt=x.t; }
+    if(cutAt==null) return vKO('coupure non appliquée');
+    if(zeroAt==null) return vKO('le duty moteur n’est jamais retombé après la coupure de consigne (over-run)');
+    const dt=(zeroAt-cutAt)/1000;
+    if(dt>1.0) return vATT('duty retombé en '+dt.toFixed(2)+' s — lent');
+    return vOK('duty retombé en '+dt.toFixed(2)+' s après coupure de la consigne'); }},
 ];
 
 function fmtT(sec){ sec=Math.max(0,Math.ceil(sec)); return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'); }
@@ -803,59 +899,78 @@ function protoTotal(steps,from,elapsed){ let t=0; for(let i=from;i<steps.length;
 
 function startProto(phase){
   if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
-  // Les erreurs moteur sont CUMULATIVES et jamais effacees par le firmware :
-  // demarrer un test avec une erreur deja memorisee fausse tous les verdicts
-  // (et bloque l'assistance). E08 est tolere en phase A (roue immobile).
-  // Phase A : sans assist-with-error le moteur coupe au premier E08 (roue
-  // immobile, chaine deposee) et le test s'arrete. On EXIGE que l'operateur
-  // l'ait active au menu — le dashboard n'ecrit rien lui-meme (cf. bloc
-  // ASSIST-WITH-ERROR plus bas : toute ecriture BLE provoque un err06).
-  if(phase==='A' && !aweOn){
-    alert('Phase A : activez d’abord « Assist with error » dans le menu du display.\n\n'
-      +'Assist > Assist with error > enable\n\n'
-      +'Sans ce mode, E08 (capteur de vitesse) tombe dès que le moteur tourne — '
-      +'c’est inévitable chaîne déposée — et coupe l’assistance.\n\n'
-      +'Ensuite : COUPEZ LA BATTERIE, rallumez, puis relancez la phase A.\n'
-      +'(La sortie de menu écrit l’EEPROM du display, ce qui peut couper brièvement '
-      +'la communication moteur et lever un err06 ; le power-cycle repart propre.)\n\n'
-      +'Test non démarré.');
+  /* Les deux phases pilotent le moteur par le MODE BANC : il doit donc etre
+     ARME — et l'armement exige une confirmation PHYSIQUE sur le display, que
+     rien ici ne peut contourner. */
+  if(!bench || !bench.engagedSeen){
+    alert('Armez d’abord le mode banc.\n\n'
+      +'1. Panneau « Mode banc » → contexte '+(phase==='A'?'« à vide »':'« en charge »')+'\n'
+      +'2. Bouton « Armer »\n'
+      +'3. Sur le display : M puis ▲\n\n'
+      +'Le protocole pilote ensuite la consigne de duty tout seul.\n\nTest non démarré.');
     return;
   }
+  if(phase==='A' && bench.loaded && !confirm(
+      'Le mode banc est armé en contexte « en charge » (plafond 90 %).\n\n'
+      +'La phase A se fait CHAÎNE DÉPOSÉE. Continuer quand même ?')) return;
+  /* Toute erreur memorisee force la cible de duty a 0 cote moteur : le
+     protocole tournerait a vide. Elles ne s'effacent qu'a la coupure batterie. */
   const cur = hist.length ? hist[hist.length-1].err : 0;
-  const blocking = phase==='A' ? (cur & 0x7F) : cur;
-  if(blocking){
+  if(cur && !aweOn){
     alert('Le moteur signale déjà : '+errTxt(cur)+'\n\n'
-      +'Ces erreurs sont MÉMORISÉES par le moteur et ne s’effacent pas toutes seules.\n'
-      +'→ Coupez l’alimentation du MOTEUR (batterie), pas seulement le display, puis rallumez.\n\n'
+      +'Tant qu’une erreur est mémorisée, la consigne de duty est forcée à 0 : rien ne tournerait.\n'
+      +'→ Coupez l’alimentation du MOTEUR (batterie), rallumez, réarmez.\n\n'
+      +(cur & 0x80 ? 'E08 en mode banc = le moteur n’est pas en 1.0.2 (patch P10).\n\n' : '')
       +'Test non démarré.');
     return;
   }
   if(phase==='B' && !trainerDev && !confirm('Home trainer non connecté : la résistance devra être réglée à la main. Continuer ?')) return;
   const steps=phase==='A'?PROTO_A:PROTO_B;
-  log=[]; recording=true; $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
-  proto={phase, steps, idx:-1, curId:null, state:'idle', t0:0, samples:[], results:[], baseVolt:null,
-         aweSent:null, timer:setInterval(protoTick,250)};
+  log=[]; recording=true; benchRec=true;
+  $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
+  proto={phase, steps, idx:-1, curId:null, state:'idle', t0:0, samples:[], results:[],
+         baseVolt:null, plateaus:[], runStart:null, timer:setInterval(protoTick,250)};
   $('protoIdle').hidden=true; $('protoDone').hidden=true; $('protoRun').hidden=false;
-  $('pPhase').textContent = phase==='A' ? 'PHASE A — moteur à blanc' : 'PHASE B — banc en charge';
-  if(phase==='A') $('pPhase').textContent += '  ·  assist-with-error ACTIF';
+  $('pPhase').textContent = phase==='A'
+      ? 'PHASE A — moteur seul, chaîne déposée' : 'PHASE B — banc en charge';
   nextStep();
+}
+
+/* Applique la consigne d'une etape au mode banc. `duty` peut etre un nombre ou
+   une fonction du temps ecoule dans l'etape (profils : cycles marche/arret,
+   echelons, coupures). Renvoie le duty demande en %, ou null hors pilotage. */
+function protoDrive(st, el){
+  if(!bench || st.manual || st.duty==null) return null;
+  const pct = (typeof st.duty === 'function') ? st.duty(el) : st.duty;
+  bench.targetD = P2D(pct);
+  bench.rampOverride = st.ramp != null ? st.ramp : null;
+  bench.stepMode = !!st.stepChange;
+  // running=true des qu'une consigne > 0 est demandee : c'est ce qui declenche
+  // le decompte des 120 s cote display, on ne l'active donc pas pour rien.
+  if(pct > 0) bench.running = true;
+  return pct;
 }
 
 function nextStep(){
   const p=proto; if(!p) return;
   if(p.idx>=0){ const st=p.steps[p.idx];
-    const r = p.samples.length ? st.check(p.samples) : vATT('aucun échantillon');
+    const r = (st.rearm || p.samples.length) ? st.check(p.samples) : vATT('aucun échantillon');
     if(p.state==='skipped' && p.samples.length) r.d+=' (étape écourtée)';
-    if(hasE08(p.samples)){
-      if(p.phase==='A') r.d+=' — E08 présent (normal : roue immobile, assist-with-error actif)';
-      else { if(r.v==='OK') r.v='ATT'; r.d+=' — E08 présent alors que la roue tourne : vérifier le capteur de vitesse (ou power-cycler le moteur, E08 reste mémorisé)'; }
-    }
     p.results.push({id:st.id,title:st.title,...r});
   }
   p.idx++; p.samples=[];
   if(p.idx>=p.steps.length) return endProto(false);
   const st=p.steps[p.idx]; p.curId=st.id;
-  $('pTitle').textContent=st.id+' — '+st.title+'  ('+st.dur+' s)';
+
+  /* Fin de bloc : on desarme volontairement. Le display coupe apres 120 s de
+     marche continue et ne remet jamais ce decompte a zero — un bloc suivant
+     demarre donc sur une seance neuve, avec sa confirmation physique. */
+  if(st.rearm && bench){
+    p.loaded = bench.loaded;          // memorise AVANT le desarmement
+    benchStop('fin de bloc').then(()=>benchArmRequest(p.loaded));
+  }
+
+  $('pTitle').textContent = st.id+' — '+st.title+(st.dur?'  ('+st.dur+' s)':'');
   let instr=st.instr;
   if(st.res!=null){
     $('pRes').hidden=false; $('pRes').textContent='résistance '+st.res+' %';
@@ -863,41 +978,98 @@ function nextStep(){
     else if(p.phase==='B') instr='→ <b>Réglez la résistance à '+st.res+' %</b> sur le trainer, puis : '+instr;
   } else $('pRes').hidden=true;
   $('pInstr').innerHTML=instr;
+
   if(st.wait){ p.state='waiting'; $('pWait').hidden=false; $('pWait').textContent=st.wait.label; }
+  else if(st.settle){ p.state='settling'; p.t0=Date.now(); $('pWait').hidden=false;
+                      $('pWait').textContent='Établissement du régime…'; }
   else { p.state='running'; p.t0=Date.now(); $('pWait').hidden=true; }
+  if(p.runStart==null && st.duty) p.runStart=Date.now();
 }
 
 function protoSample(d,now){
   const p=proto, st=p.steps[p.idx]; if(!st) return;
-  if(p.state==='waiting' && st.wait.cond(d)){ p.state='running'; p.t0=now; $('pWait').hidden=true; }
-  if(p.state==='running') p.samples.push({t:now,lvl:curLvl,pow:curPower,pmeca:pmeca,...d});
+  if(p.state==='waiting' && st.wait.cond(d)){
+    p.state = st.settle ? 'settling' : 'running'; p.t0=now;
+    if(!st.settle) $('pWait').hidden=true;
+  }
+  // bset = consigne de duty au moment de l'echantillon : indispensable pour
+  // dater precisement un echelon ou une coupure dans les verdicts.
+  if(p.state==='running')
+    p.samples.push({t:now,lvl:curLvl,pow:curPower,pmeca:pmeca,
+                    bset:(bench&&bench.running)?Math.round(bench.sentD):0,...d});
 }
 
 function protoTick(){
   const p=proto; if(!p) return;
   const st=p.steps[p.idx]; if(!st) return;
+
+  /* Attente de rearmement : si la demande a expire (l'operateur laisse le
+     trainer s'arreter, ce qui peut prendre une minute), on la reemet. Sans ca
+     le protocole restait fige indefiniment — constate au rodage a blanc. */
+  if(st.rearm && p.state==='waiting' && !bench){
+    if(!p.lastRearm || Date.now()-p.lastRearm > 3000){
+      p.lastRearm=Date.now(); benchArmRequest(p.loaded!=null?p.loaded:1);
+    }
+  }
+
+  /* Le mode banc a disparu au milieu d'une etape pilotee (display desarme,
+     dead-man, frein) : plus rien n'est pilote, on arrete plutot que de
+     journaliser des mesures qui ne veulent rien dire. */
+  if(st.duty!=null && !st.manual && !st.rearm && (!bench || !bench.engagedSeen)){
+    p.abortMsg='mode banc désarmé pendant l’étape '+st.id;
+    return endProto(true);
+  }
+
   // telemetrie interrompue (display redemarre, BLE perdu…) : le chrono est mis
   // en pause — sinon l'etape se terminerait sur des echantillons partiels sans
   // que l'operateur comprenne pourquoi.
   const stalled = lastPkt && (Date.now()-lastPkt > 3000);
   if(stalled){
-    if(p.state==='running') p.t0 += 250;   // gele le temps ecoule
+    if(p.state==='running'||p.state==='settling') p.t0 += 250;
     $('pWait').hidden=false;
     $('pWait').textContent='⚠ Télémétrie interrompue — reconnectez le SW102 (bouton en haut), le chrono est en pause.';
-  } else if(p.state==='running') { $('pWait').hidden=true; }
-  const el = p.state==='running' ? (Date.now()-p.t0)/1000 : 0;
-  $('pStepLeft').textContent = p.state==='waiting' ? fmtT(st.dur)+' (en attente)' : fmtT(st.dur-el);
-  $('pTotLeft').textContent  = fmtT(protoTotal(p.steps,p.idx,el));
-  $('pBarStep').style.width  = Math.min(100,el/st.dur*100)+'%';
+  }
+
+  let el = (p.state==='running'||p.state==='settling') ? (Date.now()-p.t0)/1000 : 0;
+
+  // Etablissement termine -> on bascule en mesure, chrono remis a zero.
+  if(p.state==='settling' && el>=st.settle){
+    p.state='running'; p.t0=Date.now(); el=0; if(!stalled) $('pWait').hidden=true;
+  } else if(p.state==='running' && !stalled) $('pWait').hidden=true;
+
+  // Pilotage : pendant l'etablissement le temps de profil part de -settle, pour
+  // qu'un profil t=>... soit date sur la fenetre de MESURE.
+  protoDrive(st, p.state==='settling' ? el-(st.settle||0) : el);
+
+  $('pStepLeft').textContent = p.state==='waiting' ? 'en attente'
+      : p.state==='settling' ? fmtT(st.settle-el)+' (établissement)' : fmtT(st.dur-el);
+  $('pTotLeft').textContent  = fmtT(protoTotal(p.steps,p.idx,p.state==='running'?el:0));
+  $('pBarStep').style.width  = Math.min(100, st.dur ? el/st.dur*100 : 0)+'%';
   const done=p.steps.slice(0,p.idx).reduce((a,x)=>a+x.dur,0);
   const tot =p.steps.reduce((a,x)=>a+x.dur,0);
   $('pBarTot').style.width   = Math.min(100,(done+Math.min(el,st.dur))/tot*100)+'%';
+
+  /* Budget des 120 s de marche continue : on le montre AVANT que le display ne
+     coupe au milieu d'une mesure. Le decompte demarre a la premiere consigne
+     > 0 et le display ne le remet jamais a zero. */
+  let chip = st.res!=null ? 'résistance '+st.res+' %' : '';
+  if(p.runStart){
+    const left = Math.max(0, 120-(Date.now()-p.runStart)/1000);
+    if(left < 30) chip = (chip?chip+'  ·  ':'')+'⚠ '+left.toFixed(0)+' s avant coupure display';
+  }
+  $('pRes').hidden = !chip; $('pRes').textContent = chip;
+
   if(p.state==='running' && el>=st.dur){ p.state='timed-out'; nextStep(); }
 }
 
 function endProto(aborted){
-  const p=proto; clearInterval(p.timer);
-  recording=false; $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
+  const p=proto; proto=null; clearInterval(p.timer);
+  // Ordre important : benchRec d'abord, sinon benchStop croit devoir clore
+  // l'enregistrement et telecharge un JSONL en double.
+  recording=false; benchRec=false;
+  // Le moteur tournait : on coupe AVANT tout le reste.
+  if(bench) benchStop(aborted ? 'protocole interrompu' : 'protocole terminé');
+  $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
   if(ftmsCtrl) trainerResistancePct(20);   // relacher la charge en fin de test
   if(log.length){
     const blob=new Blob([log.map(r=>JSON.stringify(r)).join('\n')],{type:'application/jsonl'});
@@ -906,19 +1078,17 @@ function endProto(aborted){
   }
   $('protoRun').hidden=true; $('protoDone').hidden=false;
   const ko=p.results.filter(r=>r.v==='KO').length, att=p.results.filter(r=>r.v==='ATT').length;
-  $('pDoneTitle').textContent=(aborted?'⚠ Test interrompu — ':'')+'Phase '+p.phase+' : '
-    +(ko?ko+' échec(s)':att?att+' point(s) d’attention':'tout est OK');
-  if(p.phase==='A')
-    // Le dashboard n'ecrit rien : la desactivation est a la charge de l'operateur.
-    // Le mode persiste en EEPROM display et serait DANGEREUX sur route
-    // (assistance maintenue malgre une erreur).
-    $('pDoneTitle').textContent += '  ·  🔴 pensez à REDÉSACTIVER « Assist with error » avant de rouler';
+  $('pDoneTitle').textContent=(aborted?'⚠ Test interrompu'+(p.abortMsg?' ('+p.abortMsg+')':'')+' — ':'')
+    +'Phase '+p.phase+' : '+(ko?ko+' échec(s)':att?att+' point(s) d’attention':'tout est OK');
   $('pVerdict').innerHTML='<tr><th>Étape</th><th>Verdict</th><th>Détail</th></tr>'
     +p.results.map(r=>'<tr><td>'+r.id+' '+r.title+'</td><td><span class="chip '+r.v+'">'
       +(r.v==='OK'?'OK':r.v==='ATT'?'ATTENTION':'ÉCHEC')+'</span></td><td>'+r.d+'</td></tr>').join('');
-  window._lastProto={results:p.results,phase:p.phase};
-  proto=null;
-  $('btnProtoA').disabled = !aweOn;
+  /* Les mesures absolues de la phase A servent a CONSTITUER la reference
+     duty -> ERPS a vide, qui n'existe pas encore : on les copie avec le verdict. */
+  window._lastProto={results:p.results, phase:p.phase, plateaus:p.plateaus,
+                     takeoff:p.takeoff, erpsMax:p.erpsMax,
+                     riseTime:p.riseTime, coastTime:p.coastTime};
+  benchUi();
 }
 
 $('btnProtoA').onclick=()=>startProto('A');
@@ -1027,7 +1197,8 @@ async function benchTick(){
   try{
     if(b.running){
       // rampe logicielle : au plus (rampe %/s) × durée du tick
-      const stepD = Math.max(1, P2D(+$('benchRamp').value)*BENCH_TICK/1000);
+      const rampPct = (b.rampOverride != null) ? b.rampOverride : +$('benchRamp').value;
+      const stepD = Math.max(1, P2D(rampPct)*BENCH_TICK/1000);
       if(b.sentD < b.targetD)      b.sentD = Math.min(b.targetD, b.sentD+stepD);
       else if(b.sentD > b.targetD) b.sentD = Math.max(b.targetD, b.sentD-stepD);
       /* ANTI-EMBALLEMENT — la consigne ne peut jamais devancer de plus de
@@ -1040,9 +1211,17 @@ async function benchTick(){
          Le duty remonté doit être frais : télémétrie figée = rampe gelée. */
       const h = hist.length ? hist[hist.length-1] : null;
       const ackFresh = h && (Date.now()-h.t < 1000);
+      /* Un ECHELON declare par le protocole leve le plafond : sinon la consigne
+         monte par paliers de BENCH_SLACK et on mesure la staircase du dashboard
+         au lieu de la reponse du moteur (constate au rodage a blanc : 2,2 s de
+         « temps de montee » entierement artificiels).
+         C'est sur : ce mode n'existe que pendant un protocole, lequel exige que
+         le display soit deja arme, engage et rapportant son etat — le danger
+         couvert par le plafond (commander dans le vide) ne peut pas se produire. */
+      const slack = b.stepMode ? 255 : BENCH_SLACK;
       b.clamped = false;
-      if(ackFresh && b.sentD > h.duty + BENCH_SLACK){ b.sentD = h.duty + BENCH_SLACK; b.clamped = true; }
-      else if(!ackFresh && b.sentD > BENCH_SLACK){ b.sentD = BENCH_SLACK; b.clamped = true; }
+      if(ackFresh && b.sentD > h.duty + slack){ b.sentD = h.duty + slack; b.clamped = true; }
+      else if(!ackFresh && b.sentD > slack){ b.sentD = slack; b.clamped = true; }
     }
     const ok = b.running ? await benchSend(2, Math.round(b.sentD)) : await benchSend(3, 0);
     if(ok){ b.fails = 0; b.lastOk = Date.now(); }
@@ -1079,10 +1258,17 @@ function benchArm(){
              : '• Chaîne DÉPOSÉE ou roue en l’air, rien dans le plateau\n')
     +'• Plafond de duty : '+D2P(BENCH_MAX[loaded])+' %\n\n'
     +'Après « OK », confirmez sur le display : M puis ▲.')) return;
+  $('benchDuty').value = 0;
+  benchArmRequest(loaded);
+}
+
+/* Demande d'armement nue, sans dialogue : le protocole la reemet entre deux
+   blocs. Le garde-fou reste entier — cette trame ne fait qu'AFFICHER l'ecran de
+   confirmation, c'est toujours l'operateur qui arme physiquement (M puis ▲). */
+function benchArmRequest(loaded){
   bench = {loaded, targetD:0, sentD:0, running:false, fails:0, lastOk:0, busy:false,
            engagedSeen:false, t0:Date.now(), timer:setInterval(benchTick, BENCH_TICK)};
   benchAck = null;
-  $('benchDuty').value = 0;
   benchSend(1, loaded);
   benchUi('confirmez sur le display : M puis ▲');
 }
@@ -1102,7 +1288,9 @@ async function benchStop(reason){
   const b = bench; if(!b) return;
   clearInterval(b.timer); bench = null;
   await benchSend(0,0); await benchSend(0,0);   // doublé : une trame perdue ne doit rien laisser tourner
-  if(benchRec){
+  // Pendant un protocole, un arret n'est PAS une fin de campagne : le
+  // rearmement entre deux blocs passe par ici. C'est endProto qui cloture.
+  if(benchRec && !proto){
     benchRec=false; recording=false;
     $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
     if(log.length){
