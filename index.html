@@ -910,13 +910,39 @@ function startProto(phase){
   /* Les deux phases pilotent le moteur par le MODE BANC : il doit donc etre
      ARME — et l'armement exige une confirmation PHYSIQUE sur le display, que
      rien ici ne peut contourner. */
-  if(!bench || !bench.engagedSeen){
+  if(!bench){
     alert('Armez d’abord le mode banc.\n\n'
       +'1. Panneau « Mode banc » → contexte '+(phase==='A'?'« à vide »':'« en charge »')+'\n'
       +'2. Bouton « Armer »\n'
       +'3. Sur le display : M puis ▲\n\n'
       +'Le protocole pilote ensuite la consigne de duty tout seul.\n\nTest non démarré.');
     return;
+  }
+  /* Le protocole doit savoir le mode REELLEMENT engage, sinon il piloterait
+     dans le vide. Cette information vient de la trame 0x06.
+     Le message distingue les deux causes possibles — sans quoi on ne sait pas
+     laquelle traiter — et laisse une porte de sortie : un defaut de MA
+     telemetrie ne doit pas bloquer une seance de banc. Les vrais garde-fous
+     (armement physique, dead-man, plafond de duty, arret au frein) sont dans le
+     display et ne dependent pas de cette trame. */
+  if(!bench.engagedSeen){
+    const rate = benchAckTimes.length/5;
+    if(rate < 0.4){
+      if(!confirm('Le display ne rapporte AUCUN état de mode banc (0 trame/s).\n\n'
+        +'Deux causes possibles :\n'
+        +'• l’armement n’est pas allé au bout — sur le display, appuyez M puis ▲ '
+        +'(deux appuis distincts) ; l’écran doit afficher ARME ;\n'
+        +'• le firmware display est antérieur à la 2.18.3 — la trame 0x06 n’existe pas.\n\n'
+        +'Si l’écran affiche bien ARME, vous pouvez lancer quand même : les sécurités '
+        +'(dead-man, plafond de duty, arrêt au frein) sont dans le display et restent actives.\n\n'
+        +'Lancer quand même ?')) return;
+      bench.engagedSeen = true;        // forçage assumé par l'operateur
+    } else {
+      alert('Le display émet bien '+rate.toFixed(1)+' trame(s)/s mais n’a jamais '
+        +'rapporté l’état « armé ».\n\n'
+        +'Sur le display : M puis ▲. L’écran doit afficher ARME.\n\nTest non démarré.');
+      return;
+    }
   }
   if(phase==='A' && bench.loaded && !confirm(
       'Le mode banc est armé en contexte « en charge » (plafond 90 %).\n\n'
