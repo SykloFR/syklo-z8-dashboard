@@ -39,6 +39,20 @@
   table.verdict td, table.verdict th { padding:6px 10px; border-bottom:1px solid #232a33; text-align:left; font-size:13px; }
   table.verdict th { color:var(--dim); }
   .res-chip { background:#2a3340; border-radius:6px; padding:2px 8px; font-size:12px; color:var(--dim); }
+  /* --- mode banc (le moteur tourne SEUL) --- */
+  .bench { background:var(--card); border-radius:8px; padding:14px; border:1px solid #3a2a2a; }
+  .bench .warn { background:#3a1f1c; border-radius:6px; padding:8px 12px; margin-bottom:12px; font-size:13px; }
+  .bench .hint { color:var(--dim); font-size:12px; margin-top:8px; }
+  .bench-row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:10px 0; }
+  .bench-row > label { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  #benchDuty { flex:1; min-width:220px; accent-color:var(--err); }
+  #btnBenchStop { background:var(--err); font-size:18px; padding:14px 28px; }
+  .bench-live { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:8px; margin-top:10px; }
+  .bench-live > div { background:#232a33; border-radius:6px; padding:8px 10px; }
+  .bench-live .l { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  .bench-live .v { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  #benchAlive.bad .v { color:var(--err); }
+  select { background:#2a3340; color:var(--tx); border:0; border-radius:6px; padding:7px 10px; font:inherit; }
   #status { color:var(--dim); }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
   .tile { background:var(--card); border-radius:8px; padding:10px 12px; }
@@ -143,6 +157,54 @@
   </div>
 </div>
 
+<h2>Mode banc — pilotage direct du moteur</h2>
+<div class="bench">
+  <div class="warn">
+    ⚠ <b>Le moteur tourne SEUL</b>, sans pédalage. Avant d'armer : <b>chaîne déposée</b>
+    (ou roue en l'air), rien dans le plateau, personne à proximité de la transmission.
+  </div>
+  <div class="bench-row">
+    <label>Contexte</label>
+    <select id="benchLoad">
+      <option value="0">à vide — plafond 60 %</option>
+      <option value="1">en charge (trainer) — plafond 90 %</option>
+    </select>
+    <button id="btnBenchArm">1 · Armer</button>
+    <span id="benchArmHint" style="color:var(--dim);font-size:12px"></span>
+  </div>
+  <div class="bench-row">
+    <label>Consigne</label>
+    <input type="range" id="benchDuty" min="0" max="60" value="0" step="1">
+    <b id="benchDutyVal" style="font-size:20px;font-variant-numeric:tabular-nums;min-width:70px">0 %</b>
+    <label>Rampe</label>
+    <select id="benchRamp">
+      <option value="8">douce — 8 %/s</option>
+      <option value="20" selected>normale — 20 %/s</option>
+      <option value="60">rapide — 60 %/s</option>
+    </select>
+  </div>
+  <div class="bench-row">
+    <button id="btnBenchGo" disabled>2 · Appliquer la consigne</button>
+    <button id="btnBenchStop" disabled>■ STOP</button>
+    <span style="color:var(--dim);font-size:12px">(barre d'espace ou Échap = STOP)</span>
+  </div>
+  <div class="bench-live">
+    <div><div class="l">Consigne envoyée</div><div class="v" id="benchSent">–</div></div>
+    <div><div class="l">Duty remonté</div><div class="v" id="benchAck">–</div></div>
+    <div><div class="l">Régime</div><div class="v" id="benchErps">–</div></div>
+    <div><div class="l">Courant</div><div class="v" id="benchCur">–</div></div>
+    <div id="benchAlive"><div class="l">Keep-alive</div><div class="v" id="benchAliveV">–</div></div>
+  </div>
+  <div class="hint">
+    Séquence : <b>Armer</b> → le display affiche l'écran de confirmation → appuyez
+    <b>M</b> puis <b>▲</b> sur le display → <b>Appliquer</b>. Le moteur s'arrête seul si le
+    keep-alive s'interrompt plus de 2 s, au bout de 120 s de marche, au freinage, ou
+    sur le bouton ON/OFF du display.
+    Un <b>⏳</b> à côté de la consigne signifie qu'elle est bridée par l'anti-emballement :
+    le moteur ne suit pas encore (pas confirmé sur le display, ou en limitation de courant).
+  </div>
+</div>
+
 <h2>Paramètres moteur / batterie (paquet 0x05, refresh 2 s)</h2>
 <div class="cfg" id="cfgPanel">
   <div class="row"><span class="k">Preset moteur</span><span class="val" id="cMotor">–</span></div>
@@ -177,6 +239,15 @@
 <script>
 const NUS_SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const NUS_TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+/* NUS_RX = voie dashboard -> display. ⚠ RÈGLE ABSOLUE : le SEUL opcode qu'on a
+   le droit d'écrire est BLE_BENCH (25). Tous les autres opcodes du firmware
+   arment une écriture EEPROM 500 ms plus tard ; `flash_write_words()` bloque la
+   boucle du display jusqu'à ~1 s, la liaison moteur tombe (> 750 ms) et le
+   moteur lève ERROR_FATAL — affiché « err06 ». C'est exactement ce qui a fait
+   échouer les essais du 2026-07-24. Le handler BLE_BENCH, lui, sort AVANT
+   l'armement de l'écriture (ble_services.c). */
+const NUS_RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+let nusRx = null;
 const $ = id => document.getElementById(id);
 let recording = false, log = [], lastSeq = null, pkts = 0, lost = 0;
 let cfg = {};                // dernier état config connu (fusion des sous-trames)
@@ -281,7 +352,8 @@ function handle04(dv) {
   $('errTile').classList.toggle('bad', !!d.err);
   hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps, err:d.err, pmeca:pmeca??0});
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
-  if (recording) { log.push({ t:now, stp:(proto?proto.curId:undefined), lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
+  // bset = consigne de duty envoyée en mode banc, pour corréler consigne / duty remonté
+  if (recording) { log.push({ t:now, stp:(proto?proto.curId:undefined), bset:(bench&&bench.running)?Math.round(bench.sentD):undefined, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
   if (proto) protoSample(d, now);
 }
 
@@ -360,12 +432,18 @@ $('btnConnect').onclick = async () => {
     dev.addEventListener('gattserverdisconnected', () => {
       $('status').textContent='(déconnecté)';
       $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
+      // perte du lien pendant un run banc : on lâche tout de suite le pilotage
+      // (le dead-man du display couperait de toute façon sous 2 s).
+      nusRx = null; benchAbort('lien BLE perdu');
     });
     const gatt = await dev.gatt.connect();
     const svc = await gatt.getPrimaryService(NUS_SVC);
     const ch = await svc.getCharacteristic(NUS_TX);
     await ch.startNotifications();
     ch.addEventListener('characteristicvaluechanged', onNotify);
+    // voie d'écriture : réservée à BLE_BENCH (cf. commentaire sur NUS_RX)
+    try { nusRx = await svc.getCharacteristic(NUS_RX); } catch(_) { nusRx = null; }
+    benchUi();
     $('status').textContent = '(connecté : '+(dev.name||'SW102')+')';
     $('btnConnect').textContent = (dev.name || 'SW102') + ' connecté';
     $('btnConnect').className = 'ok';
@@ -803,8 +881,166 @@ $('btnProtoCopy').onclick=async()=>{
   $('pDoneTitle').textContent+=' — copié ✓';
 };
 
+/* ---------------------------------------------------------------------------
+   MODE BANC — le moteur tourne SEUL sur consigne de duty.
+
+   Chaîne : dashboard --BLE(opcode 25)--> display --UART riding mode 8-->
+   moteur (`apply_calibration_assist`, ebike_app.c). Le moteur applique la
+   consigne d'octet[3] en boucle ouverte, courant plafonné au max batterie,
+   rampes internes au minimum (donc quasi instantanées) — d'où la rampe logicielle
+   côté dashboard, seul endroit où l'on peut adoucir la montée.
+
+   Sous-commandes (ble_services.c) : 1 = demande d'armement (valeur : contexte de
+   charge), 2 = consigne de duty + keep-alive, 3 = keep-alive seul, 0 = stop.
+
+   SÉCURITÉ — trois garde-fous côté display, aucun n'est contournable d'ici :
+     · l'armement exige une confirmation PHYSIQUE (M puis ▲). Le message BLE ne
+       fait qu'afficher l'écran : le dashboard ne peut JAMAIS lancer le moteur seul ;
+     · dead-man 2,0 s — si ce keep-alive s'interrompt, le moteur s'arrête ;
+     · plafond de duty 60 % à vide / 90 % en charge, appliqué par le display.
+   Plus : timeout 120 s de marche, frein et ON/OFF = arrêt immédiat.
+--------------------------------------------------------------------------- */
+const BENCH_MAX = {0:152, 1:229};          // plafonds display, en duty 0..254
+const D2P = d => Math.round(d*100/254);    // duty -> %
+const P2D = p => Math.round(p*254/100);    // % -> duty
+const BENCH_TICK = 500;                    // période keep-alive (dead-man = 2000 ms)
+const BENCH_SLACK = 30;                    // avance max de la consigne sur le duty réel (~12 %)
+let bench = null, benchRec = false;
+
+async function benchSend(sub, val){
+  if(!nusRx) return false;
+  // ⚠ l'opcode est figé à 25 : voir la règle sur NUS_RX. Tout autre opcode
+  // déclencherait une écriture EEPROM bloquante -> err06.
+  const f = Uint8Array.of(25, sub & 0xFF, val & 0xFF);
+  try{
+    if(nusRx.writeValueWithoutResponse) await nusRx.writeValueWithoutResponse(f);
+    else await nusRx.writeValue(f);
+    return true;
+  }catch(_){ return false; }
+}
+
+function benchUi(msg){
+  const b = bench, on = !!b;
+  const loadedSel = +$('benchLoad').value;
+  const maxP = D2P(BENCH_MAX[on ? b.loaded : loadedSel]);
+  const sl = $('benchDuty');
+  sl.max = maxP; if(+sl.value > maxP) sl.value = maxP;
+  $('benchDutyVal').textContent = sl.value+' %';
+  $('btnBenchArm').disabled  = on || !nusRx;
+  $('btnBenchGo').disabled   = !on;
+  $('btnBenchStop').disabled = !on;
+  $('benchLoad').disabled    = on;
+  $('btnBenchArm').textContent = on ? '1 · Armé' : '1 · Armer';
+  $('btnBenchArm').className   = on ? 'ok' : '';
+  if(msg !== undefined) $('benchArmHint').textContent = msg;
+  else if(!nusRx) $('benchArmHint').textContent = 'connectez le SW102 d’abord';
+
+  const h = hist.length ? hist[hist.length-1] : null;
+  $('benchSent').textContent = on && b.running
+      ? D2P(b.sentD)+' %'+(b.clamped ? ' ⏳' : '') : (on ? 'armé' : '–');
+  $('benchAck').textContent  = h ? D2P(h.duty)+' %' : '–';
+  $('benchErps').textContent = h ? h.erps : '–';
+  $('benchCur').textContent  = h ? (h.cur*0.16).toFixed(1)+' A' : '–';
+  const age = on && b.lastOk ? (Date.now()-b.lastOk)/1000 : null;
+  $('benchAliveV').textContent = age==null ? '–' : age.toFixed(1)+' s';
+  $('benchAlive').classList.toggle('bad', age!=null && age>1.5);
+}
+
+async function benchTick(){
+  const b = bench; if(!b || b.busy) return;
+  b.busy = true;
+  try{
+    if(b.running){
+      // rampe logicielle : au plus (rampe %/s) × durée du tick
+      const stepD = Math.max(1, P2D(+$('benchRamp').value)*BENCH_TICK/1000);
+      if(b.sentD < b.targetD)      b.sentD = Math.min(b.targetD, b.sentD+stepD);
+      else if(b.sentD > b.targetD) b.sentD = Math.max(b.targetD, b.sentD-stepD);
+      /* ANTI-EMBALLEMENT — la consigne ne peut jamais devancer de plus de
+         BENCH_SLACK ce que le moteur applique réellement. Deux cas couverts :
+         · « Appliquer » pressé AVANT la confirmation physique sur le display :
+           sans ce plafond la rampe monterait dans le vide et le moteur sauterait
+           d'un coup à pleine consigne à l'instant de la confirmation ;
+         · moteur en limitation de courant : on cesse d'empiler de la consigne
+           qu'il ne peut pas suivre (anti-windup).
+         Le duty remonté doit être frais : télémétrie figée = rampe gelée. */
+      const h = hist.length ? hist[hist.length-1] : null;
+      const ackFresh = h && (Date.now()-h.t < 1000);
+      b.clamped = false;
+      if(ackFresh && b.sentD > h.duty + BENCH_SLACK){ b.sentD = h.duty + BENCH_SLACK; b.clamped = true; }
+      else if(!ackFresh && b.sentD > BENCH_SLACK){ b.sentD = BENCH_SLACK; b.clamped = true; }
+    }
+    const ok = b.running ? await benchSend(2, Math.round(b.sentD)) : await benchSend(3, 0);
+    if(ok){ b.fails = 0; b.lastOk = Date.now(); }
+    else if(++b.fails >= 3){ benchAbort('écriture BLE impossible — moteur coupé par le dead-man'); return; }
+  } finally { if(bench) bench.busy = false; }
+  benchUi();
+}
+
+function benchArm(){
+  if(!nusRx){ alert('Connectez d’abord le SW102.'); return; }
+  // Les erreurs moteur sont cumulatives et ne s'effacent qu'à la coupure de la
+  // batterie : démarrer dessus fausserait toute mesure.
+  const cur = hist.length ? hist[hist.length-1].err : 0;
+  if(cur & 0x7F){
+    alert('Le moteur signale déjà : '+errTxt(cur)+'\n\n'
+      +'Coupez l’alimentation du MOTEUR (batterie), rallumez, puis réarmez.\n\nNon armé.');
+    return;
+  }
+  const loaded = +$('benchLoad').value;
+  if(!confirm('LE MOTEUR VA TOURNER SEUL.\n\n'
+    +(loaded ? '• Chaîne montée sur le home trainer, personne à proximité\n'
+             : '• Chaîne DÉPOSÉE ou roue en l’air, rien dans le plateau\n')
+    +'• Plafond de duty : '+D2P(BENCH_MAX[loaded])+' %\n\n'
+    +'Après « OK », confirmez sur le display : M puis ▲.')) return;
+  bench = {loaded, targetD:0, sentD:0, running:false, fails:0, lastOk:0, busy:false,
+           timer:setInterval(benchTick, BENCH_TICK)};
+  $('benchDuty').value = 0;
+  benchSend(1, loaded);
+  benchUi('confirmez sur le display : M puis ▲');
+}
+
+function benchGo(){
+  const b = bench; if(!b) return;
+  b.targetD = P2D(+$('benchDuty').value);
+  if(!b.running){
+    b.running = true;
+    if(!recording && !proto){ log=[]; recording=true; benchRec=true;
+      $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true; }
+  }
+  benchUi('consigne '+$('benchDuty').value+' %');
+}
+
+async function benchStop(reason){
+  const b = bench; if(!b) return;
+  clearInterval(b.timer); bench = null;
+  await benchSend(0,0); await benchSend(0,0);   // doublé : une trame perdue ne doit rien laisser tourner
+  if(benchRec){
+    benchRec=false; recording=false;
+    $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
+    if(log.length){
+      const blob=new Blob([log.map(r=>JSON.stringify(r)).join('\n')],{type:'application/jsonl'});
+      const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+      a.download='bench-mode-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jsonl'; a.click();
+    }
+  }
+  benchUi(reason || 'arrêté');
+}
+function benchAbort(reason){ if(bench) benchStop('⚠ '+reason); }
+
+$('btnBenchArm').onclick  = benchArm;
+$('btnBenchGo').onclick   = benchGo;
+$('btnBenchStop').onclick = () => benchStop('arrêté');
+$('benchLoad').onchange   = () => benchUi();
+$('benchDuty').oninput    = () => { $('benchDutyVal').textContent = $('benchDuty').value+' %'; };
+// Raccourci d'arrêt : la main n'a pas à viser un bouton pour couper le moteur.
+addEventListener('keydown', e => {
+  if(bench && (e.code==='Space' || e.code==='Escape')){ e.preventDefault(); benchStop('arrêt clavier'); }
+});
+setInterval(()=>{ if(bench) benchUi(); }, 250);
+benchUi();
+
 $('btnRec').onclick = () => {
-  if (proto) return;   // enregistrement pilote par le protocole
+  if (proto || benchRec) return;   // enregistrement piloté par le protocole / le mode banc
   recording = !recording;
   if (recording) { log=[]; $('btnRec').textContent='■ Stop'; $('btnDl').disabled=true; }
   else { $('btnRec').textContent='● Enregistrer'; $('btnDl').disabled=!log.length; }
