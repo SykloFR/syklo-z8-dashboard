@@ -193,13 +193,14 @@
     <div><div class="l">Duty remonté</div><div class="v" id="benchAck">–</div></div>
     <div><div class="l">Régime</div><div class="v" id="benchErps">–</div></div>
     <div><div class="l">Courant</div><div class="v" id="benchCur">–</div></div>
-    <div id="benchAlive"><div class="l">Keep-alive</div><div class="v" id="benchAliveV">–</div></div>
+    <div id="benchAlive"><div class="l">Marge dead-man</div><div class="v" id="benchAliveV">–</div></div>
   </div>
   <div class="hint">
     Séquence : <b>Armer</b> → le display affiche l'écran de confirmation → appuyez
     <b>M</b> puis <b>▲</b> sur le display → <b>Appliquer</b>. Le moteur s'arrête seul si le
     keep-alive s'interrompt plus de 2 s, au bout de 120 s de marche, au freinage, ou
-    sur le bouton ON/OFF du display.
+    sur le bouton ON/OFF du display — et le panneau se désarme alors tout seul, en
+    affichant la cause (display 2.18.3 ou plus récent).
     Un <b>⏳</b> à côté de la consigne signifie qu'elle est bridée par l'anti-emballement :
     le moteur ne suit pas encore (pas confirmé sur le display, ou en limitation de courant).
   </div>
@@ -292,6 +293,7 @@ function onNotify(ev) {
   if (h === 0x05 && dv.byteLength >= 19) return handle05(dv);
   if (h === 0x01 && dv.byteLength >= 18) return handle01(dv);
   if (h === 0x02 && dv.byteLength >= 12) return handle02(dv);
+  if (h === 0x06 && dv.byteLength >= 8)  return handle06(dv);
   // header 3 = trip SykloConnect, ignoré
 }
 
@@ -332,6 +334,30 @@ function handle02(dv) {
   $('vStreet').textContent = curStreet ? 'ON' : 'off';
   $('vStreetLim').textContent = curStreet && curStreetLim != null ? curStreetLim + ' km/h' : '';
   $('streetTile').classList.toggle('bad', !!curStreet);
+}
+
+/* Paquet 0x06 (display >= 2.18.3-bench) : ETAT REEL du mode banc, emis a 5 Hz
+   uniquement quand le mode est engage, plus ~2 s de remanence apres l'arret pour
+   porter la RAISON. Avant ce paquet le pilotage etait a sens unique : quand le
+   display quittait le mode (bouton ON/OFF, dead-man, frein), le dashboard
+   continuait a envoyer des keep-alive dans le vide en affichant un pilotage
+   actif. On lit desormais l'etat au lieu de le supposer. */
+const BENCH_STOP_TXT = {0:'', 1:'arrêté au display', 2:'keep-alive perdu',
+                        3:'durée max atteinte', 4:'frein actionné'};
+var benchAck = null;   // {state, duty, dutyMax, reason, deadman, runtime, at}
+function handle06(dv) {
+  benchAck = { state:dv.getUint8(1), duty:dv.getUint8(2), dutyMax:dv.getUint8(3),
+               reason:dv.getUint8(4), deadman:dv.getUint8(5),
+               runtime:dv.getUint16(6,true), at:Date.now() };
+  if (bench) {
+    if (benchAck.state !== 0) bench.engagedSeen = true;
+    // Le display a quitte le mode banc de son cote : on coupe le pilotage tout
+    // de suite et on affiche la raison qu'il nous donne.
+    // On n'y reagit qu'apres avoir vu le mode REELLEMENT engage : sinon les
+    // trames de remanence d'un run precedent (~2 s) couperaient un rearmement
+    // immediat.
+    else if (bench.engagedSeen) benchStop(BENCH_STOP_TXT[benchAck.reason] || 'arrêté au display');
+  }
 }
 
 let lastPkt = 0;   // watchdog : dernier paquet 0x04 recu
@@ -927,11 +953,16 @@ function benchUi(msg){
   sl.max = maxP; if(+sl.value > maxP) sl.value = maxP;
   $('benchDutyVal').textContent = sl.value+' %';
   $('btnBenchArm').disabled  = on || !nusRx;
-  $('btnBenchGo').disabled   = !on;
   $('btnBenchStop').disabled = !on;
   $('benchLoad').disabled    = on;
-  $('btnBenchArm').textContent = on ? '1 · Armé' : '1 · Armer';
-  $('btnBenchArm').className   = on ? 'ok' : '';
+  // Etat rapporte par le display (0x06) : source de verite. Tant qu'il n'a rien
+  // rapporte, on attend la confirmation physique.
+  const st = on && benchAck && b.engagedSeen ? benchAck.state : null;
+  $('btnBenchArm').textContent = !on ? '1 · Armer'
+      : st === 2 ? '1 · Moteur en marche' : st === 1 ? '1 · Armé' : '1 · Attente display';
+  $('btnBenchArm').className   = on && st ? 'ok' : on ? 'busy' : '';
+  // Tant que le display n'a pas confirme, la consigne ne sert a rien.
+  $('btnBenchGo').disabled     = !on || !b.engagedSeen;
   if(msg !== undefined) $('benchArmHint').textContent = msg;
   else if(!nusRx) $('benchArmHint').textContent = 'connectez le SW102 d’abord';
 
@@ -941,13 +972,32 @@ function benchUi(msg){
   $('benchAck').textContent  = h ? D2P(h.duty)+' %' : '–';
   $('benchErps').textContent = h ? h.erps : '–';
   $('benchCur').textContent  = h ? (h.cur*0.16).toFixed(1)+' A' : '–';
-  const age = on && b.lastOk ? (Date.now()-b.lastOk)/1000 : null;
-  $('benchAliveV').textContent = age==null ? '–' : age.toFixed(1)+' s';
-  $('benchAlive').classList.toggle('bad', age!=null && age>1.5);
+  /* Marge avant coupure : celle que le DISPLAY décompte réellement (0x06), pas
+     l'âge de nos écritures — c'est elle qui décide. Repli sur notre propre âge
+     tant que le display ne rapporte rien (firmware < 2.18.3). */
+  let margin = null;
+  if(on && benchAck && b.engagedSeen && Date.now()-benchAck.at < 1500)
+    margin = benchAck.deadman/10;                       // ticks 100 ms -> s
+  else if(on && b.lastOk)
+    margin = Math.max(0, 2 - (Date.now()-b.lastOk)/1000);
+  $('benchAliveV').textContent = margin==null ? '–' : margin.toFixed(1)+' s';
+  $('benchAlive').classList.toggle('bad', margin!=null && margin < 0.8);
 }
 
 async function benchTick(){
   const b = bench; if(!b || b.busy) return;
+  /* Le display rapportait son etat (0x06) et s'est tu : il a quitte le mode
+     banc, ou la liaison est tombee. Dans les deux cas on cesse de piloter — le
+     symptome constate au banc etait justement un panneau qui continuait a
+     envoyer des keep-alive dans le vide. */
+  if(b.engagedSeen && benchAck && Date.now()-benchAck.at > 1500){
+    benchAbort('le display ne rapporte plus le mode banc'); return;
+  }
+  /* Armement demande mais jamais confirme physiquement : on ne laisse pas le
+     panneau se croire actif indefiniment. */
+  if(!b.engagedSeen && Date.now()-b.t0 > 60000){
+    benchAbort('armement non confirmé sur le display (M puis ▲)'); return;
+  }
   b.busy = true;
   try{
     if(b.running){
@@ -1005,7 +1055,8 @@ function benchArm(){
     +'• Plafond de duty : '+D2P(BENCH_MAX[loaded])+' %\n\n'
     +'Après « OK », confirmez sur le display : M puis ▲.')) return;
   bench = {loaded, targetD:0, sentD:0, running:false, fails:0, lastOk:0, busy:false,
-           timer:setInterval(benchTick, BENCH_TICK)};
+           engagedSeen:false, t0:Date.now(), timer:setInterval(benchTick, BENCH_TICK)};
+  benchAck = null;
   $('benchDuty').value = 0;
   benchSend(1, loaded);
   benchUi('confirmez sur le display : M puis ▲');
