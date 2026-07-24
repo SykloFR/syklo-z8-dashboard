@@ -144,19 +144,46 @@ Chaîne déposée, la roue ne tourne jamais → **E08 (capteur vitesse) est iné
 dès que le moteur tourne assez longtemps, et sans contre-mesure il coupe
 l'assistance et bloque le test (constaté au banc le 2026-07-24).
 
-Au lancement de la **phase A**, le dashboard active donc automatiquement
-**assist-with-error** sur le display (commande BLE `[15, 0, 1]` sur NUS RX —
-`BLE_OPTIONS` sous-index 0, qui pose aussi le flag franchissant le verrou du mot
-de passe). E08 est alors **toléré** par les verdicts de la phase A (les autres
-erreurs restent bloquantes). En phase B (roue entraînée par le trainer), E08 ne
-doit pas apparaître : sa présence est signalée en ATTENTION (capteur à vérifier,
-ou moteur à power-cycler — E08 reste mémorisé côté moteur).
+**Le mode doit être activé À LA MAIN, au menu du display**, avant la phase A :
+`Assist > Assist with error > enable`. Le dashboard le **lit** (paquet 0x02,
+octet 10 bit 1), l'affiche dans une tuile, et **refuse de lancer la phase A**
+tant qu'il n'est pas actif. E08 est alors **toléré** par les verdicts de la
+phase A (les autres erreurs restent bloquantes). En phase B (roue entraînée par
+le trainer), E08 ne doit pas apparaître : sa présence est signalée en ATTENTION.
 
-⚠️ Ce réglage **persiste dans l'EEPROM du display** et serait dangereux sur route
-(assistance possible malgré une erreur). Il est donc **toujours désactivé en fin
-de test**, même abandonné (+ garde-fou à la fermeture de la page). Le bandeau du
-test affiche l'état ; si la commande BLE échoue, l'instruction demande de le
-faire au menu.
+### 🔴 Pourquoi le dashboard n'écrit RIEN en BLE
+
+Une version antérieure activait ce mode par commande BLE (`[15,0,1]` sur NUS RX).
+**C'était la cause du `err06` constaté au banc le 2026-07-24.** Toute commande BLE
+arme une écriture EEPROM 500 ms plus tard, et `flash_write_words()` appelle
+`wait_gc()` qui **boucle en bloquant jusqu'à 1000 ms** :
+
+```c
+for (volatile int count = 0; count < 1000 && !gc_done; count++) {
+    sd_app_evt_wait(); nrf_delay_ms(1);      // eeprom_hw.c
+}
+```
+
+Pendant ce blocage le display n'émet plus rien vers le moteur, qui lève
+`ERROR_FATAL` après ~750 ms sans communication (`comm_error_counter > 30`) —
+affiché **err06**. La commande censée éviter l'arrêt du test le provoquait.
+
+**Le dashboard est donc en lecture seule vis-à-vis du display.** Les seules
+écritures BLE restantes vont au home trainer, appareil distinct, sans effet sur
+la liaison display↔moteur.
+
+⚠️ Le mode **persiste en EEPROM display** et serait dangereux sur route
+(assistance maintenue malgré une erreur) : le panneau de fin de phase A rappelle
+de le **redésactiver** avant de rouler.
+
+### Séquence recommandée avant la phase A
+
+1. Menu display : `Assist with error` → **enable**
+2. **Couper la batterie**, rallumer — la sortie de menu écrit l'EEPROM et peut
+   elle-même provoquer un `err06` ; le power-cycle repart d'un état propre et
+   efface les erreurs mémorisées
+3. Connecter le dashboard, vérifier la tuile « Assist w/ error » = ACTIF
+4. Lancer la phase A
 
 ### Codes d'erreur — décodage réel (chemin Z8-OSF)
 

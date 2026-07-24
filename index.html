@@ -84,6 +84,7 @@
   <div class="tile" id="trainerTile"><div class="l">Puissance roue</div><div class="v" id="vPmeca">–</div><div class="u" id="vTrainerSrc">home trainer</div></div>
   <div class="tile"><div class="l">Ratio roue/batt.</div><div class="v" id="vRatio">–</div><div class="u">inclut l'apport cycliste</div></div>
   <div class="tile"><div class="l">Tension moteur</div><div class="v" id="vVolt">–</div><div class="u">V (remontée moteur)</div></div>
+  <div class="tile" id="aweTile"><div class="l">Assist w/ error</div><div class="v" id="vAwe">–</div><div class="u">requis en phase A</div></div>
   <div class="tile" id="streetTile"><div class="l">Street mode</div><div class="v" id="vStreet">–</div><div class="u" id="vStreetLim"></div></div>
   <div class="tile"><div class="l">Vitesse roue</div><div class="v" id="vSpeed">–</div><div class="u">km/h</div></div>
   <div class="tile"><div class="l">Niveau assist</div><div class="v" id="vLvl">–</div><div class="u" id="vMode"></div></div>
@@ -176,7 +177,6 @@
 <script>
 const NUS_SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const NUS_TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
-const NUS_RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';  // ecriture vers le SW102
 const $ = id => document.getElementById(id);
 let recording = false, log = [], lastSeq = null, pkts = 0, lost = 0;
 let cfg = {};                // dernier état config connu (fusion des sous-trames)
@@ -244,6 +244,10 @@ var pmeca = null;
 var proto = null;   // etat du protocole guide (defini plus bas)
 function handle02(dv) {
   curPower = (dv.getUint8(9) - 1) * 10;                 // W
+  // octet 10 (encode +1) : b0 throttle, b1 assist-with-error, b6 motor type…
+  aweOn = ((dv.getUint8(10) - 1) >> 1) & 1;
+  $('vAwe').textContent = aweOn ? 'ACTIF' : 'off';
+  $('aweTile').classList.toggle('bad', !aweOn);
   const b11 = dv.getUint8(11) - 1;
   curStreet = (b11 >> 4) & 1;                           // street actif
   $('vPow').textContent = curPower;
@@ -355,7 +359,6 @@ $('btnConnect').onclick = async () => {
     const ch = await svc.getCharacteristic(NUS_TX);
     await ch.startNotifications();
     ch.addEventListener('characteristicvaluechanged', onNotify);
-    try { nusRx = await svc.getCharacteristic(NUS_RX); } catch(_) { nusRx = null; }
     $('status').textContent = '(connecté : '+(dev.name||'SW102')+')';
     $('btnConnect').textContent = (dev.name || 'SW102') + ' connecté';
     $('btnConnect').className = 'ok';
@@ -463,34 +466,19 @@ $('btnTrainer').onclick = async () => {
 
 
 /* ---------------------------------------------------------------------------
-   COMMANDES VERS LE SW102 (NUS RX 6e400002)
-   Trame : [opcode, sous-index, valeur]. BLE_OPTIONS = 15, sous-index 0 =
-   assist-with-error : le handler du display pose aussi ui8_g_screen_init_flag,
-   donc la valeur passe le verrou du mot de passe et part au moteur dans la
-   trame CONFIG (byte 8). C'est le mecanisme prevu par l'OSF pour le banc :
-   E08 (capteur vitesse) est INEVITABLE chaine deposee — la roue ne tourne
-   jamais — et sans ce mode le moteur coupe des que E08 tombe.
-   ⚠ Le reglage PERSISTE dans l'EEPROM du display : il est donc TOUJOURS
-   redesactive en fin de test (meme abandonne), et un garde-fou beforeunload
-   tente la desactivation si la page se ferme en plein test.
+   ASSIST-WITH-ERROR — LECTURE SEULE (aucune ecriture BLE)
+   ⚠ HISTORIQUE : le dashboard activait ce mode par commande BLE ([15,0,1] sur
+   NUS RX). C'ETAIT LA CAUSE DU err06 constate au banc le 2026-07-24 : toute
+   commande BLE arme une ecriture EEPROM 500 ms plus tard, et flash_write_words()
+   appelle wait_gc() qui boucle en BLOQUANT jusqu'a 1000 ms
+   (eeprom_hw.c : `for(count<1000 && !gc_done) { sd_app_evt_wait(); nrf_delay_ms(1); }`).
+   Pendant ce blocage le display n'emet plus rien vers le moteur, qui leve
+   ERROR_FATAL apres ~750 ms sans communication (ebike_app.c, comm_error_counter>30)
+   — affiche "err06". La commande censee eviter l'arret du test le provoquait.
+   => Le dashboard n'ecrit PLUS RIEN. L'etat est LU dans le paquet 0x02 et
+   l'operateur active le mode au menu du display, avant le test.
 --------------------------------------------------------------------------- */
-let nusRx = null, aweOn = false;   // aweOn = assist-with-error actif (pose par nous)
-
-async function sw102Write(bytes){
-  if(!nusRx) return false;
-  try{
-    const b=Uint8Array.from(bytes);
-    if(nusRx.writeValueWithoutResponse) await nusRx.writeValueWithoutResponse(b);
-    else await nusRx.writeValue(b);
-    return true;
-  }catch(_){ return false; }
-}
-async function setAssistWithError(on){
-  const ok = await sw102Write([15,0,on?1:0]);   // BLE_OPTIONS, sub 0
-  if(ok) aweOn = !!on;
-  return ok;
-}
-window.addEventListener('beforeunload', ()=>{ if(aweOn) sw102Write([15,0,0]); });
+let aweOn = false;   // lu du paquet 0x02, jamais ecrit
 
 /* ---------------------------------------------------------------------------
    CONTROLE DE LA RESISTANCE (FTMS Control Point 0x2AD9)
@@ -682,6 +670,21 @@ function startProto(phase){
   // Les erreurs moteur sont CUMULATIVES et jamais effacees par le firmware :
   // demarrer un test avec une erreur deja memorisee fausse tous les verdicts
   // (et bloque l'assistance). E08 est tolere en phase A (roue immobile).
+  // Phase A : sans assist-with-error le moteur coupe au premier E08 (roue
+  // immobile, chaine deposee) et le test s'arrete. On EXIGE que l'operateur
+  // l'ait active au menu — le dashboard n'ecrit rien lui-meme (cf. bloc
+  // ASSIST-WITH-ERROR plus bas : toute ecriture BLE provoque un err06).
+  if(phase==='A' && !aweOn){
+    alert('Phase A : activez d’abord « Assist with error » dans le menu du display.\n\n'
+      +'Assist > Assist with error > enable\n\n'
+      +'Sans ce mode, E08 (capteur de vitesse) tombe dès que le moteur tourne — '
+      +'c’est inévitable chaîne déposée — et coupe l’assistance.\n\n'
+      +'Ensuite : COUPEZ LA BATTERIE, rallumez, puis relancez la phase A.\n'
+      +'(La sortie de menu écrit l’EEPROM du display, ce qui peut couper brièvement '
+      +'la communication moteur et lever un err06 ; le power-cycle repart propre.)\n\n'
+      +'Test non démarré.');
+    return;
+  }
   const cur = hist.length ? hist[hist.length-1].err : 0;
   const blocking = phase==='A' ? (cur & 0x7F) : cur;
   if(blocking){
@@ -698,15 +701,7 @@ function startProto(phase){
          aweSent:null, timer:setInterval(protoTick,250)};
   $('protoIdle').hidden=true; $('protoDone').hidden=true; $('protoRun').hidden=false;
   $('pPhase').textContent = phase==='A' ? 'PHASE A — moteur à blanc' : 'PHASE B — banc en charge';
-  if(phase==='A'){
-    // E08 est inevitable chaine deposee : activation d'assist-with-error AVANT
-    // la premiere etape, sinon le moteur coupe au premier E08.
-    setAssistWithError(true).then(ok=>{
-      proto && (proto.aweSent=ok);
-      $('pPhase').textContent += ok ? '  ·  assist-with-error ACTIF'
-        : '  ·  ⚠ activez « Assist w/ error » dans le menu du display (commande BLE indisponible)';
-    });
-  }
+  if(phase==='A') $('pPhase').textContent += '  ·  assist-with-error ACTIF';
   nextStep();
 }
 
@@ -768,14 +763,6 @@ function endProto(aborted){
   const p=proto; clearInterval(p.timer);
   recording=false; $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
   if(ftmsCtrl) trainerResistancePct(20);   // relacher la charge en fin de test
-  if(p.phase==='A' && aweOn){
-    // TOUJOURS redesactiver, meme sur abandon : le reglage persiste en EEPROM
-    // display et serait dangereux sur route (assistance possible malgre erreur).
-    setAssistWithError(false).then(ok=>{
-      $('pDoneTitle').textContent += ok ? '  ·  assist-with-error désactivé ✓'
-        : '  ·  🔴 DÉSACTIVEZ « Assist w/ error » dans le menu du display !';
-    });
-  }
   if(log.length){
     const blob=new Blob([log.map(r=>JSON.stringify(r)).join('\n')],{type:'application/jsonl'});
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
@@ -785,6 +772,11 @@ function endProto(aborted){
   const ko=p.results.filter(r=>r.v==='KO').length, att=p.results.filter(r=>r.v==='ATT').length;
   $('pDoneTitle').textContent=(aborted?'⚠ Test interrompu — ':'')+'Phase '+p.phase+' : '
     +(ko?ko+' échec(s)':att?att+' point(s) d’attention':'tout est OK');
+  if(p.phase==='A')
+    // Le dashboard n'ecrit rien : la desactivation est a la charge de l'operateur.
+    // Le mode persiste en EEPROM display et serait DANGEREUX sur route
+    // (assistance maintenue malgre une erreur).
+    $('pDoneTitle').textContent += '  ·  🔴 pensez à REDÉSACTIVER « Assist with error » avant de rouler';
   $('pVerdict').innerHTML='<tr><th>Étape</th><th>Verdict</th><th>Détail</th></tr>'
     +p.results.map(r=>'<tr><td>'+r.id+' '+r.title+'</td><td><span class="chip '+r.v+'">'
       +(r.v==='OK'?'OK':r.v==='ATT'?'ATTENTION':'ÉCHEC')+'</span></td><td>'+r.d+'</td></tr>').join('');
