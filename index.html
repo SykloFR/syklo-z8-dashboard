@@ -19,6 +19,26 @@
   button.ok::before { content:'✓ '; }
   button.busy { background:#5a4a1e; }
   button:disabled { opacity:.4; cursor:default; }
+  /* --- protocole guide --- */
+  .proto { background:var(--card); border-radius:8px; padding:14px; }
+  .proto .hint { color:var(--dim); font-size:12px; }
+  .proto-head { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
+  .proto-step { font-size:20px; font-weight:700; margin:8px 0 2px; }
+  .proto-instr { font-size:16px; line-height:1.5; background:#232a33; border-radius:6px; padding:10px 12px; margin:8px 0; }
+  .proto-instr b { color:var(--warn); }
+  .proto-wait { color:var(--warn); font-weight:600; animation:blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity:.35; } }
+  .pbar { height:8px; background:#232a33; border-radius:4px; overflow:hidden; margin:4px 0 10px; }
+  .pbar > div { height:100%; background:var(--acc); transition:width .25s linear; }
+  .pbar.total > div { background:var(--ok); }
+  .proto-times { display:flex; gap:24px; font-variant-numeric:tabular-nums; }
+  .proto-times b { font-size:22px; }
+  .chip { display:inline-block; padding:2px 10px; border-radius:10px; font-weight:700; font-size:12px; }
+  .chip.OK { background:#1e6b3f; } .chip.ATT { background:#7a5c12; } .chip.KO { background:#7a1f1c; }
+  table.verdict { border-collapse:collapse; width:100%; margin-top:8px; }
+  table.verdict td, table.verdict th { padding:6px 10px; border-bottom:1px solid #232a33; text-align:left; font-size:13px; }
+  table.verdict th { color:var(--dim); }
+  .res-chip { background:#2a3340; border-radius:6px; padding:2px 8px; font-size:12px; color:var(--dim); }
   #status { color:var(--dim); }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
   .tile { background:var(--card); border-radius:8px; padding:10px 12px; }
@@ -76,6 +96,51 @@
 <div class="legend">Fenêtre 60 s — <b style="color:#4da3ff">ADC torque</b> ·
 <b style="color:#4cd07d">duty</b> · <b style="color:#f0b429">courant ADC</b> · <b style="color:#c58af0">ERPS/2</b> ·
 <b style="color:#ff7ab6">puissance roue</b> (home trainer).</div>
+
+<h2>Protocole de test guidé</h2>
+<div class="proto">
+  <div id="protoIdle">
+    <div class="bar" style="margin-bottom:6px">
+      <button id="btnProtoA">▶ Phase A — moteur à blanc (~4 min)</button>
+      <button id="btnProtoB">▶ Phase B — banc en charge (~6 min)</button>
+    </div>
+    <div class="hint">
+      <b>A</b> = chaîne DÉPOSÉE, moteur libre — diagnostic rapide avant montage (capteurs,
+      démarrages, haut régime, sprints).
+      <b>B</b> = chaîne montée + home trainer — caractérisation en charge (la résistance du
+      trainer est pilotée automatiquement si le contrôle FTMS est disponible).
+      L'enregistrement JSONL démarre et se télécharge automatiquement.
+    </div>
+  </div>
+  <div id="protoRun" hidden>
+    <div class="proto-head">
+      <span id="pPhase" style="font-weight:700"></span>
+      <span id="pRes" class="res-chip" hidden></span>
+      <span class="proto-times">
+        <span>étape <b id="pStepLeft">–</b></span>
+        <span>total restant <b id="pTotLeft">–</b></span>
+      </span>
+    </div>
+    <div class="pbar"><div id="pBarStep" style="width:0%"></div></div>
+    <div class="pbar total"><div id="pBarTot" style="width:0%"></div></div>
+    <div class="proto-step" id="pTitle"></div>
+    <div class="proto-instr" id="pInstr"></div>
+    <div id="pWait" class="proto-wait" hidden></div>
+    <div class="bar" style="margin-top:10px">
+      <button id="btnProtoSkip" class="sec">Étape suivante ▸</button>
+      <button id="btnProtoAbort" class="sec">✕ Abandonner</button>
+    </div>
+  </div>
+  <div id="protoDone" hidden>
+    <div class="proto-step" id="pDoneTitle"></div>
+    <table class="verdict" id="pVerdict"></table>
+    <div class="bar" style="margin-top:10px">
+      <button id="btnProtoCopy" class="sec">Copier le verdict</button>
+      <button id="btnProtoClose" class="sec">Fermer</button>
+    </div>
+    <div class="hint">Le JSONL complet a été téléchargé automatiquement (champ <code>stp</code> = étape).</div>
+  </div>
+</div>
 
 <h2>Paramètres moteur / batterie (paquet 0x05, refresh 2 s)</h2>
 <div class="cfg" id="cfgPanel">
@@ -155,6 +220,7 @@ let curPower = null, curStreet = null;
 // pmeca est defini plus bas avec le bloc home trainer, declare ici pour etre
 // visible depuis onNotify (log JSONL) sans dependre de l'ordre d'evaluation.
 var pmeca = null;
+var proto = null;   // etat du protocole guide (defini plus bas)
 function handle02(dv) {
   curPower = (dv.getUint8(9) - 1) * 10;                 // W
   const b11 = dv.getUint8(11) - 1;
@@ -182,7 +248,8 @@ function handle04(dv) {
   $('errTile').classList.toggle('bad', !!d.err);
   hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps , pmeca:pmeca??0});
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
-  if (recording) { log.push({ t:now, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
+  if (recording) { log.push({ t:now, stp:(proto?proto.curId:undefined), lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
+  if (proto) protoSample(d, now);
 }
 
 function handle05(dv) {
@@ -338,6 +405,7 @@ $('btnTrainer').onclick = async () => {
       $('vPmeca').textContent = '–'; $('vRatio').textContent = '–'; pmeca = null;
     });
     const gatt = await dev.gatt.connect();
+    trainerGatt = gatt;
     let svc, ch, parser, kind;
     try {
       svc = await gatt.getPrimaryService(CPS_SVC);
@@ -353,13 +421,280 @@ $('btnTrainer').onclick = async () => {
     $('vTrainerSrc').textContent = (dev.name || 'trainer') + ' · ' + kind;
     $('btnTrainer').textContent = (dev.name || 'Trainer') + ' connecté';
     $('btnTrainer').className = 'sec ok';
+    // controle de resistance : tente FTMS meme si les donnees passent par CPS
+    acquireFtmsControl().then(ok=>{ if(ok) $('vTrainerSrc').textContent += ' · ctrl'; });
   } catch (e) {
     $('vTrainerSrc').textContent = 'erreur : ' + e.message;
     $('btnTrainer').textContent = 'Connecter home trainer'; $('btnTrainer').className = 'sec';
   }
 };
 
+
+/* ---------------------------------------------------------------------------
+   CONTROLE DE LA RESISTANCE (FTMS Control Point 0x2AD9)
+   Beaucoup de trainers exposent Cycling Power (donnees) ET FTMS (controle) :
+   on tente donc l'acquisition du controle dans tous les cas, meme si les
+   donnees arrivent par CPS. Sequence : Request Control (0x00), Start/Resume
+   (0x07, exige par certains modeles), puis Set Target Resistance Level (0x04).
+   Le mode ERG (Set Target Power) est volontairement evite : sa double boucle
+   de regulation masque les ecarts entre moteurs (cf. analyses/06).
+--------------------------------------------------------------------------- */
+const FTMS_CP='00002ad9-0000-1000-8000-00805f9b34fb', FTMS_RANGE='00002ad6-0000-1000-8000-00805f9b34fb';
+let trainerGatt=null, ftmsCtrl=null, ftmsResRange=null;
+
+async function acquireFtmsControl(){
+  if(!trainerGatt) return false;
+  try{
+    const svc=await trainerGatt.getPrimaryService(FTMS_SVC);
+    try{ const rr=await svc.getCharacteristic(FTMS_RANGE); const dv=await rr.readValue();
+         ftmsResRange={min:dv.getInt16(0,true)/10, max:dv.getInt16(2,true)/10}; }catch(_){}
+    ftmsCtrl=await svc.getCharacteristic(FTMS_CP);
+    await ftmsCtrl.startNotifications();
+    ftmsCtrl.addEventListener('characteristicvaluechanged', e=>{
+      const dv=e.target.value;
+      if(dv.byteLength>=3 && dv.getUint8(0)===0x80 && dv.getUint8(2)!==0x01)
+        $('vTrainerSrc').textContent += ' · cmd refusée';
+    });
+    await ftmsCtrl.writeValue(Uint8Array.of(0x00));
+    try{ await ftmsCtrl.writeValue(Uint8Array.of(0x07)); }catch(_){ }
+    return true;
+  }catch(_){ ftmsCtrl=null; return false; }
+}
+
+async function trainerResistancePct(pct){
+  if(!ftmsCtrl) return false;
+  // Parametre du 0x04 : uint8, resolution 0.1 niveau. Si la plage (0x2AD6) a pu
+  // etre lue on mappe le % dessus ; sinon on envoie le % tel quel
+  // (interpretation la plus repandue).
+  let val;
+  if(ftmsResRange){ const lvl=ftmsResRange.min+(ftmsResRange.max-ftmsResRange.min)*pct/100; val=Math.round(lvl*10); }
+  else val=Math.round(pct);
+  val=Math.max(0,Math.min(255,val));
+  try{ await ftmsCtrl.writeValue(Uint8Array.of(0x04,val)); return true; }catch(_){ return false; }
+}
+
+/* ---------------------------------------------------------------------------
+   PROTOCOLE DE TEST GUIDE — deux phases decouplees.
+   A : moteur A BLANC (chaine deposee) — diagnostic rapide avant montage.
+   B : banc EN CHARGE (chaine + trainer) — caracterisation globale.
+   Chaque etape : instruction, condition de depart (le chrono ne part que quand
+   l'operateur fait ce qui est demande), duree fixe, verdict calcule sur les
+   echantillons de l'etape. Enregistrement automatique (champ stp du JSONL).
+   Seuils issus des baselines terrain 2026-07-22 (moteur 48V sain) :
+   couple a vide 120-250 ADC, cap courant 143 ADC (23 A), ERPS max observe 276.
+--------------------------------------------------------------------------- */
+const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+const mx=a=>a.length?Math.max(...a):0, mn=a=>a.length?Math.min(...a):0;
+const col=(ss,k)=>ss.map(x=>x[k]).filter(v=>v!=null);
+function ckErr(ss){ return ss.every(x=>!x.err); }
+function vOK(d){return{v:'OK',d};} function vATT(d){return{v:'ATT',d};} function vKO(d){return{v:'KO',d};}
+
+const PROTO_A=[
+ {id:'A1',title:'Capteurs au repos',dur:20,res:null,
+  instr:"Ne touchez à <b>rien</b> — mains hors des pédales, moteur immobile.",
+  check(ss){ const t=col(ss,'torque'); if(!t.length) return vKO('aucune donnée');
+    const m=mean(t), sp=mx(t)-mn(t);
+    if(!ckErr(ss)) return vKO('erreur remontée au repos');
+    if(m<120||m>250) return vKO('offset couple '+m.toFixed(0)+' hors famille 120-250');
+    if(sp>15) return vATT('offset couple instable (écart '+sp+')');
+    if(mx(col(ss,'cur'))>6) return vATT('courant non nul au repos');
+    return vOK('offset '+m.toFixed(0)+', stable, courant nul'); }},
+ {id:'A2',title:'Couple & cadence',dur:30,res:null,
+  wait:{label:'Tournez les manivelles pour démarrer l’étape…',cond:d=>d.cad>5},
+  instr:"<b>Niveau 0</b> (assistance coupée) — tournez les manivelles à la main, en forçant par à-coups sur la pédale.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur pendant la rotation');
+    const dmax=mx(col(ss,'delta')), cadOk=ss.filter(x=>x.cad>0).length/ss.length;
+    if(dmax<20) return vKO('capteur de couple ne répond pas (delta max '+dmax+')');
+    if(cadOk<0.5) return vATT('cadence détectée sur seulement '+Math.round(cadOk*100)+'% du temps');
+    return vOK('delta max '+dmax+', cadence OK'); }},
+ {id:'A3',title:'Démarrages multiples',dur:60,res:null,
+  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
+  instr:"<b>Niveau 2</b> — enchaînez <b>6 démarrages</b> : pédalez 4 s, arrêt complet 4 s, répétez.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur pendant les démarrages');
+    let starts=0, low=true;
+    for(const x of ss){ if(low && x.erps>40){starts++; low=false;} if(!low && x.erps<20) low=true; }
+    if(starts<4) return vATT(starts+' démarrages détectés (attendu ≥5) — refaire si doute');
+    return vOK(starts+' démarrages, le moteur repart à chaque fois'); }},
+ {id:'A4',title:'Montée progressive',dur:50,res:null,
+  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
+  instr:"Pédalage <b>régulier</b> — montez d’un niveau toutes les <b>10 s</b> : L1 → L5.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur pendant la montée');
+    const byLvl={}; for(const x of ss) if(x.lvl!=null&&x.cur!=null){(byLvl[x.lvl]=byLvl[x.lvl]||[]).push(x.cur);}
+    const lvls=Object.keys(byLvl).map(Number).sort((a,b)=>a-b);
+    if(lvls.length<3) return vATT('seulement '+lvls.length+' niveau(x) vu(s) — montée non testée');
+    let mono=true, prev=-1;
+    for(const l of lvls){ const m=mean(byLvl[l]); if(m<prev*0.8) mono=false; prev=m; }
+    return mono?vOK(lvls.length+' niveaux, courant croissant'):vATT('courant non croissant avec le niveau'); }},
+ {id:'A5',title:'Haut régime',dur:30,res:null,
+  wait:{label:'Accélérez pour démarrer l’étape…',cond:d=>d.erps>150},
+  instr:"<b>Niveau 5</b> — pédalez vite, atteignez le régime <b>maximal</b> (roue libre).",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur à haut régime');
+    const e=mx(col(ss,'erps')), du=mx(col(ss,'duty'));
+    if(e<180) return vKO('ERPS max '+e+' — régime anormalement bas');
+    if(e<230) return vATT('ERPS max '+e+' (attendu ≥230 à vide)');
+    return vOK('ERPS max '+e+', duty max '+du); }},
+ {id:'A6',title:'Sprints (rampes rapides)',dur:30,res:null,
+  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
+  instr:"<b>Niveau 5</b> — <b>3 sprints violents</b> de 3-4 s, relâchez entre chaque.",
+  check(ss){ const c=mx(col(ss,'cur'));
+    if(!ckErr(ss)) return vKO('erreur pendant les sprints');
+    if(c>150) return vKO('courant '+(c*0.16).toFixed(1)+' A au-dessus du plafond attendu');
+    let peaks=0, lo=true; for(const x of ss){ if(lo&&x.cur>60){peaks++;lo=false;} if(!lo&&x.cur<25) lo=true; }
+    if(peaks<2) return vATT(peaks+' pic(s) détecté(s) — sprints trop timides ?');
+    return vOK(peaks+' pics, courant max '+(c*0.16).toFixed(1)+' A, régulation tient'); }},
+];
+
+const PROTO_B=[
+ {id:'B1',title:'Mise en place',dur:15,res:30,
+  instr:"Chaîne montée, <b>braquet médian FIXE</b> (ne plus changer de vitesse pendant tout le test). Ne pédalez pas.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur à l’arrêt');
+    proto.baseVolt=mean(col(ss,'voltX10'));
+    if(mx(col(ss,'cur'))>6) return vATT('courant non nul à l’arrêt');
+    return vOK('repos OK, tension '+(proto.baseVolt/10).toFixed(1)+' V'); }},
+ {id:'B2',title:'Palier modéré',dur:60,res:50,
+  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
+  instr:"<b>Niveau 3</b> — cadence régulière <b>60-70 rpm</b>.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur au palier');
+    const p=col(ss,'pow').filter(x=>x>0), pm=col(ss,'pmeca').filter(x=>x>0);
+    if(!p.length) return vATT('puissance batterie non lue (paquet 0x02 absent ?)');
+    const r=[]; for(const x of ss) if(x.pow>50&&x.pmeca>0) r.push(x.pmeca/x.pow);
+    let det='Pbatt moy '+mean(p).toFixed(0)+' W';
+    if(pm.length) det+=', Proue moy '+mean(pm).toFixed(0)+' W';
+    if(r.length>5){ const rm=mean(r), sd=Math.sqrt(mean(r.map(x=>(x-rm)*(x-rm))));
+      det+=', ratio '+rm.toFixed(2)+'±'+sd.toFixed(2);
+      if(sd/rm>0.35) return vATT(det+' — ratio instable'); }
+    return vOK(det); }},
+ {id:'B3',title:'Couple maximal',dur:60,res:100,
+  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
+  instr:"<b>RÉSISTANCE MAX</b> — <b>Niveau 5</b>, cadence <b>basse</b>, forcez comme dans une côte raide. C’est l’étape qui fait vraiment travailler le moteur.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur sous couple max (E07 ?)');
+    const c=mx(col(ss,'cur')), sag=proto.baseVolt?(proto.baseVolt-mn(col(ss,'voltX10'))):null;
+    if(c>150) return vKO('courant '+(c*0.16).toFixed(1)+' A au-dessus du plafond');
+    let det='courant max '+(c*0.16).toFixed(1)+' A';
+    if(sag!=null) det+=', sag '+(sag/10).toFixed(1)+' V';
+    if(c<100) return vATT(det+' — moteur pas assez chargé (résistance insuffisante ?)');
+    if(sag!=null&&sag>60) return vATT(det+' — sag batterie élevé');
+    return vOK(det+', régulation au cap'); }},
+ {id:'B4',title:'Pic de puissance',dur:25,res:100,
+  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
+  instr:"<b>Sprint maximal</b> 5-10 s, puis maintenez l’effort. Résistance toujours au max.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur au pic');
+    const p=mx(col(ss,'pow')), c=mx(col(ss,'cur'));
+    if(c>150) return vKO('courant au-dessus du plafond');
+    let det='Pbatt max '+p+' W, courant max '+(c*0.16).toFixed(1)+' A';
+    if(p<600) return vATT(det+' — pic faible (attendu ≥700 W en 48V)');
+    return vOK(det); }},
+ {id:'B5',title:'Endurance',dur:90,res:80,
+  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
+  instr:"<b>Niveau 4</b> — effort <b>soutenu et constant</b> pendant 90 s. Ne relâchez pas.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur pendant l’endurance');
+    const h=Math.floor(ss.length/2), c1=mean(col(ss.slice(0,h),'cur')), c2=mean(col(ss.slice(h),'cur'));
+    const drift=c1>5?Math.abs(c2-c1)/c1:0;
+    let det='courant moy '+((c1+c2)/2*0.16).toFixed(1)+' A, dérive '+(drift*100).toFixed(0)+'%';
+    if(drift>0.25) return vATT(det+' — effort irrégulier ou dérive moteur');
+    return vOK(det); }},
+ {id:'B6',title:'Coupure nette',dur:15,res:50,
+  wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
+  instr:"Pédalez 5 s puis <b>STOP NET</b> — ne touchez plus les pédales jusqu’à la fin du chrono.",
+  check(ss){ if(!ckErr(ss)) return vKO('erreur à la coupure');
+    let lastPedal=null, cut=null;
+    for(const x of ss){ if(x.cad>5) lastPedal=x.t; else if(lastPedal&&cut==null&&x.duty<10) cut=x.t; }
+    if(!lastPedal) return vATT('pédalage non détecté');
+    if(cut==null) return vKO('le duty n’est jamais redescendu après l’arrêt (over-run !)');
+    const dt=(cut-lastPedal)/1000;
+    if(dt>2.5) return vATT('coupure en '+dt.toFixed(1)+' s — lent');
+    return vOK('coupure en '+dt.toFixed(1)+' s après arrêt du pédalage'); }},
+];
+
+function fmtT(sec){ sec=Math.max(0,Math.ceil(sec)); return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'); }
+function protoTotal(steps,from,elapsed){ let t=0; for(let i=from;i<steps.length;i++) t+=steps[i].dur; return t-(elapsed||0); }
+
+function startProto(phase){
+  if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
+  if(phase==='B' && !trainerDev && !confirm('Home trainer non connecté : la résistance devra être réglée à la main. Continuer ?')) return;
+  const steps=phase==='A'?PROTO_A:PROTO_B;
+  log=[]; recording=true; $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
+  proto={phase, steps, idx:-1, curId:null, state:'idle', t0:0, samples:[], results:[], baseVolt:null,
+         timer:setInterval(protoTick,250)};
+  $('protoIdle').hidden=true; $('protoDone').hidden=true; $('protoRun').hidden=false;
+  $('pPhase').textContent = phase==='A' ? 'PHASE A — moteur à blanc' : 'PHASE B — banc en charge';
+  nextStep();
+}
+
+function nextStep(){
+  const p=proto; if(!p) return;
+  if(p.idx>=0){ const st=p.steps[p.idx];
+    const r = p.samples.length ? st.check(p.samples) : vATT('aucun échantillon');
+    if(p.state==='skipped' && p.samples.length) r.d+=' (étape écourtée)';
+    p.results.push({id:st.id,title:st.title,...r});
+  }
+  p.idx++; p.samples=[];
+  if(p.idx>=p.steps.length) return endProto(false);
+  const st=p.steps[p.idx]; p.curId=st.id;
+  $('pTitle').textContent=st.id+' — '+st.title+'  ('+st.dur+' s)';
+  let instr=st.instr;
+  if(st.res!=null){
+    $('pRes').hidden=false; $('pRes').textContent='résistance '+st.res+' %';
+    if(ftmsCtrl) trainerResistancePct(st.res);
+    else if(p.phase==='B') instr='→ <b>Réglez la résistance à '+st.res+' %</b> sur le trainer, puis : '+instr;
+  } else $('pRes').hidden=true;
+  $('pInstr').innerHTML=instr;
+  if(st.wait){ p.state='waiting'; $('pWait').hidden=false; $('pWait').textContent=st.wait.label; }
+  else { p.state='running'; p.t0=Date.now(); $('pWait').hidden=true; }
+}
+
+function protoSample(d,now){
+  const p=proto, st=p.steps[p.idx]; if(!st) return;
+  if(p.state==='waiting' && st.wait.cond(d)){ p.state='running'; p.t0=now; $('pWait').hidden=true; }
+  if(p.state==='running') p.samples.push({t:now,lvl:curLvl,pow:curPower,pmeca:pmeca,...d});
+}
+
+function protoTick(){
+  const p=proto; if(!p) return;
+  const st=p.steps[p.idx]; if(!st) return;
+  const el = p.state==='running' ? (Date.now()-p.t0)/1000 : 0;
+  $('pStepLeft').textContent = p.state==='waiting' ? fmtT(st.dur)+' (en attente)' : fmtT(st.dur-el);
+  $('pTotLeft').textContent  = fmtT(protoTotal(p.steps,p.idx,el));
+  $('pBarStep').style.width  = Math.min(100,el/st.dur*100)+'%';
+  const done=p.steps.slice(0,p.idx).reduce((a,x)=>a+x.dur,0);
+  const tot =p.steps.reduce((a,x)=>a+x.dur,0);
+  $('pBarTot').style.width   = Math.min(100,(done+Math.min(el,st.dur))/tot*100)+'%';
+  if(p.state==='running' && el>=st.dur){ p.state='timed-out'; nextStep(); }
+}
+
+function endProto(aborted){
+  const p=proto; clearInterval(p.timer);
+  recording=false; $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
+  if(ftmsCtrl) trainerResistancePct(20);   // relacher la charge en fin de test
+  if(log.length){
+    const blob=new Blob([log.map(r=>JSON.stringify(r)).join('\n')],{type:'application/jsonl'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download='bench-proto'+p.phase+'-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jsonl'; a.click();
+  }
+  $('protoRun').hidden=true; $('protoDone').hidden=false;
+  const ko=p.results.filter(r=>r.v==='KO').length, att=p.results.filter(r=>r.v==='ATT').length;
+  $('pDoneTitle').textContent=(aborted?'⚠ Test interrompu — ':'')+'Phase '+p.phase+' : '
+    +(ko?ko+' échec(s)':att?att+' point(s) d’attention':'tout est OK');
+  $('pVerdict').innerHTML='<tr><th>Étape</th><th>Verdict</th><th>Détail</th></tr>'
+    +p.results.map(r=>'<tr><td>'+r.id+' '+r.title+'</td><td><span class="chip '+r.v+'">'
+      +(r.v==='OK'?'OK':r.v==='ATT'?'ATTENTION':'ÉCHEC')+'</span></td><td>'+r.d+'</td></tr>').join('');
+  window._lastProto={results:p.results,phase:p.phase};
+  proto=null;
+}
+
+$('btnProtoA').onclick=()=>startProto('A');
+$('btnProtoB').onclick=()=>startProto('B');
+$('btnProtoSkip').onclick=()=>{ if(proto){ proto.state='skipped'; nextStep(); } };
+$('btnProtoAbort').onclick=()=>{ if(proto) endProto(true); };
+$('btnProtoClose').onclick=()=>{ $('protoDone').hidden=true; $('protoIdle').hidden=false; };
+$('btnProtoCopy').onclick=async()=>{
+  const lp=window._lastProto; if(!lp) return;
+  await navigator.clipboard.writeText(JSON.stringify({phase:lp.phase,config:cfg,verdict:lp.results},null,1));
+  $('pDoneTitle').textContent+=' — copié ✓';
+};
+
 $('btnRec').onclick = () => {
+  if (proto) return;   // enregistrement pilote par le protocole
   recording = !recording;
   if (recording) { log=[]; $('btnRec').textContent='■ Stop'; $('btnDl').disabled=true; }
   else { $('btnRec').textContent='● Enregistrer'; $('btnDl').disabled=!log.length; }

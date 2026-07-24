@@ -95,3 +95,45 @@ Hébergée en HTTPS sur **GitHub Pages** : https://syklofr.github.io/syklo-z8-da
 - Une seule connexion BLE à la fois : couper SykloConnect avant.
 - Mise à jour de la page : éditer `index.html` **dans ce dépôt**, puis
   `git push origin master`.
+
+## Protocole de test guidé (section « Protocole de test guidé » de la page)
+
+Deux phases **découplées**, chacune lançable seule. L'enregistrement JSONL démarre
+automatiquement au lancement et se télécharge automatiquement à la fin (champ `stp`
+= étape). Chaque étape affiche l'instruction, le temps restant de l'étape et le
+temps total restant ; le chrono d'une étape ne part que lorsque l'opérateur fait
+ce qui est demandé (pédaler, accélérer…).
+
+### Phase A — moteur à blanc (~4 min, chaîne DÉPOSÉE)
+
+Diagnostic rapide avant montage. Le moteur est poussé loin mais à vide.
+
+| Étape | Durée | Ce qu'on vérifie |
+|---|---|---|
+| A1 Capteurs au repos | 20 s | offset couple 120-250 et stable, courant nul, aucune erreur |
+| A2 Couple & cadence | 30 s | le capteur de couple répond (delta), la cadence compte |
+| A3 Démarrages ×6 | 60 s | le moteur repart à chaque fois, et s'arrête entre chaque |
+| A4 Montée L1→L5 | 50 s | courant croissant avec le niveau |
+| A5 Haut régime | 30 s | ERPS max ≥ 230 (baseline 276), aucune erreur hall |
+| A6 Sprints ×3 | 30 s | rampes rapides, courant ≤ plafond, la régulation tient |
+
+### Phase B — banc en charge (~6 min, chaîne + home trainer)
+
+Caractérisation globale. **La résistance du trainer est pilotée automatiquement**
+(FTMS Control Point 0x2AD9 — Request Control, Start, Set Target Resistance) ; si le
+contrôle n'est pas disponible, l'instruction affiche la consigne à régler à la main.
+La résistance passe **au maximum dès la 3e étape** : sur un trainer ~600 W on sature
+vite, et sans charge maximale le moteur tourne vite mais ne force pas.
+
+| Étape | Durée | Résistance | Ce qu'on vérifie |
+|---|---|---|---|
+| B1 Mise en place | 15 s | 30 % | repos propre, tension de référence (pour le sag) |
+| B2 Palier modéré | 60 s | 50 % | Pbatt/Proue cohérents, ratio stable |
+| B3 Couple maximal | 60 s | **100 %** | courant proche du cap 23 A, pas d'E07, sag mesuré |
+| B4 Pic de puissance | 25 s | **100 %** | Pbatt max (≥700 W attendu en 48V) |
+| B5 Endurance | 90 s | 80 % | dérive du courant < 25 % sur 90 s |
+| B6 Coupure nette | 15 s | 50 % | temps duty→0 après arrêt du pédalage (over-run) |
+
+Verdict par étape (OK / ATTENTION / ÉCHEC) + « Copier le verdict » (JSON avec la
+config moteur du paquet 0x05). Le mode ERG n'est **jamais** utilisé : sa double
+boucle de régulation masque les écarts entre moteurs (cf. étude banc).
