@@ -124,12 +124,13 @@
       Les deux phases pilotent le moteur par le <b>mode banc</b> : aucun pédalage,
       c'est le dashboard qui impose la consigne de duty. <b>Armez le mode banc
       d'abord</b> (panneau ci-dessous), le protocole fait le reste.<br>
-      <b>A</b> = chaîne DÉPOSÉE — diagnostic avant montage : capteurs au repos et au
-      pédalier, décollage, paliers croissants, haut régime, démarrages répétés,
-      échelon, roue libre.<br>
-      <b>B</b> = chaîne montée + home trainer, résistance au maximum — charge, couple,
-      pic, endurance, coupure. Un seul bloc (display 2.18.6 : budget de marche
-      300 s).<br>
+      <b>A</b> = chaîne DÉPOSÉE — diagnostic avant montage : capteurs au repos,
+      cadence, décollage, paliers croissants, haut régime (Hall + FOC), démarrages
+      répétés, échelon, roue libre, <b>frein</b>.<br>
+      <b>B</b> = chaîne montée + home trainer, résistance au maximum — <b>capteur de
+      couple en charge</b>, <b>capteur de vitesse</b> (remettez l'aimant si possible),
+      montée en charge, couple, pic, endurance, coupure. Un seul bloc (display
+      2.18.7 : budget de marche 300 s).<br>
       L'enregistrement JSONL démarre et se télécharge automatiquement (champ
       <code>bset</code> = consigne envoyée).
     </div>
@@ -803,6 +804,7 @@ const PROTO_A=[
      charge. On journalise quand meme le delta a titre indicatif. */
   check(ss){ const g=errGate(ss); if(g) return g;
     const dmax=mx(col(ss,'delta')), cadOk=ss.filter(x=>x.cad>0).length/ss.length;
+    proto.cadPct=Math.round(cadOk*100); proto.deltaFree=dmax;
     if(cadOk<0.05) return vKO('capteur de cadence muet (aucune rotation détectée)');
     if(cadOk<0.20) return vATT('cadence détectée sur seulement '+Math.round(cadOk*100)+'% du temps — tournez plus longtemps pour conclure');
     return vOK('cadence détectée sur '+Math.round(cadOk*100)+'% du temps (delta couple '+dmax+' à titre indicatif — le couple se teste en phase B)'); }},
@@ -837,11 +839,15 @@ const PROTO_A=[
   check(ss){ const g=errGate(ss); if(g) return g;
     const e=mx(col(ss,'erps')), c=mx(col(ss,'cur'));
     const halls=new Set(col(ss,'hall')); const es=col(ss,'erps');
-    proto.erpsMax=e;
+    proto.erpsMax=e; proto.hallCount=halls.size;
+    /* Angle FOC : jamais elucide (remonte ~0 depuis le debut du chantier).
+       On ne le juge pas, on le RELEVE a haut regime — c'est la que sa valeur
+       devrait etre la plus significative. */
+    proto.focHigh=mean(col(ss,'foc'));
     if(halls.size<6) return vATT('seulement '+halls.size+' états Hall vus sur 6 — capteur ou commutation à vérifier');
     const jitter=sdev(es)/Math.max(1,mean(es));
     if(jitter>0.08) return vATT('régime instable à plein duty (±'+(jitter*100).toFixed(0)+'%) — ERPS max '+e);
-    return vOK('ERPS max '+e+', 6 états Hall, régime stable, courant max '+A(c)+' A'); }},
+    return vOK('ERPS max '+e+', 6 états Hall, régime stable, courant max '+A(c)+' A, FOC moy '+proto.focHigh.toFixed(1)); }},
 
  {id:'A6',title:'Démarrages répétés',duty:t=>(t%7<3.5?30:0),ramp:60,dur:21,
   instr:"Trois cycles <b>marche / arrêt</b> automatiques. Le moteur doit repartir à chaque fois, sans à-coup ni blocage.",
@@ -882,6 +888,21 @@ const PROTO_A=[
     if(stopAt==null) return vOK('rotor encore en rotation en fin d’étape depuis '+peak+' ERPS — roue libre très longue, à comparer entre moteurs');
     const dt=(stopAt-cutAt)/1000; proto.coastTime=dt;
     return vOK('roue libre '+dt.toFixed(2)+' s (±0,2 s) depuis '+peak+' ERPS — métrique de référence, à comparer entre moteurs'); }},
+
+ /* Capteur de FREIN : on utilise le garde-fou existant. Le frein coupe le mode
+    banc cote display, qui rapporte la raison en 0x06 — la coupure elle-meme
+    EST la preuve que le capteur fonctionne, de bout en bout. `expectStop` dit
+    au moteur du protocole de ne PAS traiter cet arret comme un abandon. */
+ {id:'A9',title:'Capteur de frein',duty:15,ramp:20,dur:30,expectStop:true,
+  instr:"Le moteur tourne doucement (15 %). <b>Actionnez un levier de frein</b> — la coupure doit être immédiate et le display annoncer « frein ».",
+  check(ss){
+    const r = benchAck ? benchAck.reason : null;
+    if(r===4){ proto.brakeOk=true;
+      return vOK('frein détecté : coupure immédiate, raison « frein » rapportée par le display'); }
+    if(!bench || !bench.engagedSeen){ proto.brakeOk=false;
+      return vATT('le mode banc s’est arrêté mais sans rapporter « frein » ('+(BENCH_STOP_TXT[r]||('raison '+r))+') — recommencez en freinant franchement'); }
+    proto.brakeOk=false;
+    return vKO('30 s sans coupure — capteur de frein muet (ou frein non actionné)'); }},
 ];
 
 // Verdict d'un palier : enregistre la mesure ET la range dans proto.plateaus,
@@ -905,6 +926,20 @@ const PROTO_B=[
     if(mx(col(ss,'cur'))>6) return vATT('courant non nul à l’arrêt');
     return vOK('repos OK, tension à vide '+(proto.baseVolt/10).toFixed(1)+' V'); }},
 
+ /* Le SEUL montage ou le capteur de couple voit du couple : chaine montee,
+    resistance au maximum, MOTEUR A L'ARRET, l'operateur appuie sur la pedale.
+    La chaine retenue par le trainer charge le plateau -> le capteur se deforme.
+    (Chaine deposee c'est impossible : aucun couple sur un axe libre — A2 ne
+    teste que la cadence.) */
+ {id:'B1b',title:'Capteur de couple en charge (manuel)',dur:15,duty:0,manual:true,res:100,
+  instr:"Moteur à l’arrêt, résistance au <b>maximum</b> : appuyez <b>fort</b> sur la pédale avant, plusieurs coups francs. La roue ne doit quasiment pas tourner.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    const dmax=mx(col(ss,'delta'));
+    proto.torqueLoadDelta=dmax;
+    if(dmax<20) return vKO('capteur de couple muet sous charge (delta max '+dmax+')');
+    if(dmax<60) return vATT('réponse faible sous charge (delta max '+dmax+') — appuyer plus fort, ou capteur à surveiller');
+    return vOK('delta max '+dmax+' sous charge — le capteur de couple répond'); }},
+
  {id:'B2',title:'Montée en charge',duty:35,ramp:8,settle:5,dur:15,res:100,
   instr:"Montée progressive à 35 % contre la résistance maximale. La chaîne se tend — restez à l’écart.",
   check(ss){ const g=errGate(ss); if(g) return g;
@@ -912,13 +947,27 @@ const PROTO_B=[
     let det='courant moy '+A(c)+' A';
     if(p.length)  det+=', Pbatt '+mean(p).toFixed(0)+' W';
     if(pm.length) det+=', Proue '+mean(pm).toFixed(0)+' W';
+    /* Capteur de VITESSE : testable ici si l'aimant est en place sur le banc
+       (l'operateur peut le reconnecter en phase B). Roue entrainee par la
+       chaine + rotor > 30 ERPS -> la vitesse doit etre non nulle. Absent ->
+       ATT, pas KO : sur un trainer l'aimant est souvent depose. */
+    const sp=ss.filter(x=>x.erps>30);
+    const seen=sp.length ? sp.filter(x=>x.spdX10>0).length/sp.length : 0;
+    proto.speedSeen = seen>0.5;
+    if(proto.speedSeen){
+      const rr=sp.filter(x=>x.spdX10>0).map(x=>(x.spdX10/10)/x.erps);
+      proto.speedRatio=mean(rr);
+      det+=', vitesse roue OK ('+mean(sp.filter(x=>x.spdX10>0).map(x=>x.spdX10/10)).toFixed(1)+' km/h)';
+    } else det+=', capteur de vitesse muet (aimant en place ?)';
     if(c<20) return vATT(det+' — charge faible, la résistance du trainer suffit-elle ?');
+    if(!proto.speedSeen) return vATT(det);
     return vOK(det); }},
 
  {id:'B3',title:'Palier de couple',duty:45,ramp:20,settle:5,dur:25,res:100,
   instr:"Palier soutenu — c’est l’étape qui fait vraiment travailler le moteur. Surveillez la température du carter à la main <b>après</b> le test.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const c=mx(col(ss,'cur')), sag=proto.baseVolt?(proto.baseVolt-mn(col(ss,'voltX10'))):null;
+    if(sag!=null) proto.sagMax=sag;
     let det='courant max '+A(c)+' A';
     if(sag!=null) det+=', sag '+(sag/10).toFixed(1)+' V';
     if(c>150) return vKO(det+' — au-dessus du plafond attendu');
@@ -1113,6 +1162,9 @@ function protoTick(){
      dead-man, frein) : plus rien n'est pilote, on arrete plutot que de
      journaliser des mesures qui ne veulent rien dire. */
   if(st.duty!=null && !st.manual && !st.rearm && (!bench || !bench.engagedSeen)){
+    // Une etape `expectStop` ATTEND cet arret (test du frein) : c'est sa
+    // reussite, pas un abandon — on la clot et on continue.
+    if(st.expectStop){ p.state='timed-out'; return nextStep(); }
     p.abortMsg='mode banc désarmé pendant l’étape '+st.id;
     return endProto(true);
   }
@@ -1181,14 +1233,37 @@ function endProto(aborted){
   const ko=p.results.filter(r=>r.v==='KO').length, att=p.results.filter(r=>r.v==='ATT').length;
   $('pDoneTitle').textContent=(aborted?'⚠ Test interrompu'+(p.abortMsg?' ('+p.abortMsg+')':'')+' — ':'')
     +'Phase '+p.phase+' : '+(ko?ko+' échec(s)':att?att+' point(s) d’attention':'tout est OK');
+  /* Synthese capteurs : l'etat de CHAQUE capteur en une ligne, releve pendant
+     le run. « non testé » dit honnetement ou passer ensuite (ex : couple en
+     charge -> phase B). */
+  const cap=[
+    ['Couple', (p.torqueOffset!=null?'offset repos '+p.torqueOffset.toFixed(0):'repos : non testé')
+      +(p.torqueLoadDelta!=null?' · delta en charge '+p.torqueLoadDelta
+        :(p.deltaFree!=null?' · delta à vide '+p.deltaFree+' (en charge : phase B)':''))],
+    ['Cadence', p.cadPct!=null?'détectée '+p.cadPct+' % du temps (A2)':'non testée (phase A)'],
+    ['Hall', p.hallCount!=null?p.hallCount+'/6 états vus à haut régime':'non testé (phase A)'],
+    ['Vitesse roue', p.speedSeen==null?'non testée (phase B, aimant requis)'
+      :p.speedSeen?'OK'+(p.speedRatio!=null?' — '+(p.speedRatio*100).toFixed(1)+' km/h à 100 ERPS':'')
+      :'MUETTE (aimant en place ?)'],
+    ['Frein', p.brakeOk==null?'non testé (phase A, étape A9)':p.brakeOk?'OK — coupure + raison rapportée':'à revérifier (A9)'],
+    ['Angle FOC', p.focHigh!=null?p.focHigh.toFixed(1)+' à haut régime (anomalie connue si ≈ 0 — non élucidée)':'non relevé'],
+    ['Batterie', p.baseVolt?(p.baseVolt/10).toFixed(1)+' V à vide'+(p.sagMax!=null?' · sag max '+(p.sagMax/10).toFixed(1)+' V':''):'non relevée (phase B)'],
+  ];
   $('pVerdict').innerHTML='<tr><th>Étape</th><th>Verdict</th><th>Détail</th></tr>'
     +p.results.map(r=>'<tr><td>'+r.id+' '+r.title+'</td><td><span class="chip '+r.v+'">'
-      +(r.v==='OK'?'OK':r.v==='ATT'?'ATTENTION':'ÉCHEC')+'</span></td><td>'+r.d+'</td></tr>').join('');
+      +(r.v==='OK'?'OK':r.v==='ATT'?'ATTENTION':'ÉCHEC')+'</span></td><td>'+r.d+'</td></tr>').join('')
+    +'<tr><th colspan="3" style="padding-top:12px">Capteurs — synthèse du run</th></tr>'
+    +cap.map(x=>'<tr><td>'+x[0]+'</td><td colspan="2">'+x[1]+'</td></tr>').join('');
   /* Les mesures absolues de la phase A servent a CONSTITUER la reference
      duty -> ERPS a vide, qui n'existe pas encore : on les copie avec le verdict. */
   window._lastProto={results:p.results, phase:p.phase, plateaus:p.plateaus,
                      takeoff:p.takeoff, erpsMax:p.erpsMax,
-                     riseTime:p.riseTime, coastTime:p.coastTime};
+                     riseTime:p.riseTime, coastTime:p.coastTime,
+                     sensors:{torqueOffset:p.torqueOffset, torqueLoadDelta:p.torqueLoadDelta,
+                              deltaFree:p.deltaFree, cadPct:p.cadPct, hallCount:p.hallCount,
+                              speedSeen:p.speedSeen, speedRatio:p.speedRatio,
+                              brakeOk:p.brakeOk, focHigh:p.focHigh,
+                              baseVolt:p.baseVolt, sagMax:p.sagMax}};
   benchUi();
 }
 
