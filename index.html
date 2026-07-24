@@ -173,7 +173,7 @@
   <div class="bench-row">
     <label>Contexte</label>
     <select id="benchLoad">
-      <option value="0">à vide — plafond 60 %</option>
+      <option value="0">à vide — plafond 90 %</option>
       <option value="1">en charge (trainer) — plafond 90 %</option>
     </select>
     <button id="btnBenchArm">1 · Armer</button>
@@ -794,17 +794,18 @@ const PROTO_A=[
     if(mx(col(ss,'cur'))>6) return vATT('courant non nul au repos');
     return vOK('offset '+m.toFixed(0)+', stable (écart '+sp+'), courant nul'); }},
 
- {id:'A2',title:'Capteurs de pédalier (manuel)',dur:20,duty:0,manual:true,
-  instr:"<b>À la main</b> : tournez les manivelles plusieurs tours, puis appuyez fort sur une pédale en retenant l’autre. Le moteur ne tourne pas.",
+ {id:'A2',title:'Capteur de cadence (manuel)',dur:15,duty:0,manual:true,
+  instr:"<b>À la main</b> : tournez les manivelles <b>régulièrement</b>, une dizaine de tours. Le moteur ne tourne pas.",
+  /* CADENCE UNIQUEMENT. Le capteur de couple mesure entre l'axe et le
+     plateau : chaine deposee, il n'y a AUCUNE charge au plateau, donc rien a
+     mesurer — appuyer fort sur les pedales ne produit aucun couple sur un axe
+     libre (constat atelier 2026-07-24). Le couple se teste en phase B, en
+     charge. On journalise quand meme le delta a titre indicatif. */
   check(ss){ const g=errGate(ss); if(g) return g;
     const dmax=mx(col(ss,'delta')), cadOk=ss.filter(x=>x.cad>0).length/ss.length;
-    // Sans resistance au plateau le couple reste faible : on verifie que le
-    // capteur REPOND, pas qu'il atteint une valeur donnee.
     if(cadOk<0.05) return vKO('capteur de cadence muet (aucune rotation détectée)');
-    if(cadOk<0.20) return vATT('cadence détectée sur seulement '+Math.round(cadOk*100)+'% du temps — pédalez plus longtemps pour conclure');
-    if(dmax<10)   return vKO('capteur de couple muet (delta max '+dmax+')');
-    if(dmax<25)   return vATT('couple faible (delta max '+dmax+') — normal sans résistance, vérifier en phase B');
-    return vOK('cadence détectée sur '+Math.round(cadOk*100)+'% du temps, delta couple max '+dmax); }},
+    if(cadOk<0.20) return vATT('cadence détectée sur seulement '+Math.round(cadOk*100)+'% du temps — tournez plus longtemps pour conclure');
+    return vOK('cadence détectée sur '+Math.round(cadOk*100)+'% du temps (delta couple '+dmax+' à titre indicatif — le couple se teste en phase B)'); }},
 
  {id:'A3',title:'Décollage',duty:20,ramp:8,dur:8,
   instr:"Le moteur monte <b>doucement</b> jusqu’à 20 %. On cherche le seuil de duty auquel le rotor décolle.",
@@ -819,7 +820,8 @@ const PROTO_A=[
  {id:'A4a',title:'Palier 25 %',duty:25,ramp:20,settle:2,dur:5,instr:"Palier stabilisé — mesure du régime et du courant à vide.",check:ckPlateau},
  {id:'A4b',title:'Palier 35 %',duty:35,ramp:20,settle:2,dur:5,instr:"Palier stabilisé.",check:ckPlateau},
  {id:'A4c',title:'Palier 45 %',duty:45,ramp:20,settle:2,dur:5,instr:"Palier stabilisé.",check:ckPlateau},
- {id:'A4d',title:'Palier 55 %',duty:55,ramp:20,settle:2,dur:5,instr:"Dernier palier — le verdict porte sur la <b>cohérence de la série</b>.",
+ {id:'A4d',title:'Palier 55 %',duty:55,ramp:20,settle:2,dur:5,instr:"Palier stabilisé.",check:ckPlateau},
+ {id:'A4e',title:'Palier 70 %',duty:70,ramp:20,settle:2,dur:5,instr:"Dernier palier — le verdict porte sur la <b>cohérence de la série</b>.",
   check(ss){ const r=ckPlateau(ss); if(r.v==='KO') return r;
     // Verdict transversal : c'est la SERIE qui doit etre coherente, chaque
     // palier isole ne dit rien tant qu'on n'a pas de reference absolue.
@@ -830,8 +832,8 @@ const PROTO_A=[
     if(!mono) return vKO('régime non croissant avec le duty : '+det);
     return vOK(det+' — série croissante et régulière'); }},
 
- {id:'A5',title:'Haut régime',duty:60,ramp:20,settle:3,dur:8,
-  instr:"Plafond à vide (60 %). Régime maximal — c’est ici qu’un défaut de capteur Hall ou de commutation se voit.",
+ {id:'A5',title:'Haut régime',duty:85,ramp:20,settle:3,dur:8,
+  instr:"Haut régime (85 % — display 2.18.7, un display plus ancien plafonnera à 60 %). C’est ici qu’un défaut de capteur Hall ou de commutation se voit.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const e=mx(col(ss,'erps')), c=mx(col(ss,'cur'));
     const halls=new Set(col(ss,'hall')); const es=col(ss,'erps');
@@ -872,10 +874,14 @@ const PROTO_A=[
       if(cutAt==null && x.bset===0 && peak>20) cutAt=x.t;
       if(cutAt!=null && stopAt==null && x.erps<5) stopAt=x.t; }
     if(cutAt==null) return vKO('coupure non appliquée');
-    if(stopAt==null) return vATT('le rotor tournait encore en fin d’étape (roue libre longue, plutôt bon signe)');
+    /* Pas de verdict sur la duree : la coupure rapide est NORMALE
+       (deceleration rapide parametree, aucun over-run possible sans couple au
+       plateau — constat atelier 2026-07-24) et la telemetrie a 5 Hz ne resout
+       pas mieux que ~0,2 s. C'est une METRIQUE DE REFERENCE : sa derive d'un
+       moteur a l'autre, ou dans le temps, signalera un frottement. */
+    if(stopAt==null) return vOK('rotor encore en rotation en fin d’étape depuis '+peak+' ERPS — roue libre très longue, à comparer entre moteurs');
     const dt=(stopAt-cutAt)/1000; proto.coastTime=dt;
-    if(dt<0.5) return vATT('arrêt en '+dt.toFixed(2)+' s depuis '+peak+' ERPS — très brusque, vérifier les frottements');
-    return vOK('arrêt libre en '+dt.toFixed(2)+' s depuis '+peak+' ERPS'); }},
+    return vOK('roue libre '+dt.toFixed(2)+' s (±0,2 s) depuis '+peak+' ERPS — métrique de référence, à comparer entre moteurs'); }},
 ];
 
 // Verdict d'un palier : enregistre la mesure ET la range dans proto.plateaus,
@@ -1216,7 +1222,7 @@ $('btnProtoCopy').onclick=async()=>{
      · plafond de duty 60 % à vide / 90 % en charge, appliqué par le display.
    Plus : timeout 300 s de marche (2.18.6), frein et ON/OFF = arrêt immédiat.
 --------------------------------------------------------------------------- */
-const BENCH_MAX = {0:152, 1:229};          // plafonds display, en duty 0..254
+const BENCH_MAX = {0:229, 1:229};          // plafonds display 2.18.7, en duty 0..254 (le display reste seul juge)
 const D2P = d => Math.round(d*100/254);    // duty -> %
 const P2D = p => Math.round(p*254/100);    // % -> duty
 const BENCH_TICK = 500;                    // période keep-alive (dead-man = 2000 ms)

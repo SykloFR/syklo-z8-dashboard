@@ -66,11 +66,11 @@ sandbox.__fakeRx = {
 ctx('nusRx = __fakeRx;');
 
 // etat du "display" simule
-const disp = { state:0, duty:0, dutyMax:152, reason:0, deadman:0, runtime:0 };
+const disp = { state:0, duty:0, dutyMax:229, reason:0, deadman:0, runtime:0 };
 function applyToFakeDisplay(f){
   if(f[0]!==25) { OUT.errors.push('OPCODE INTERDIT ECRIT : '+f[0]); return; }
   switch(f[1]){
-    case 1: disp.dutyMax = f[2] ? 229 : 152; disp.pending = true; break;
+    case 1: disp.dutyMax = 229; disp.pending = true; break;   // 2.18.7 : 90 % dans les deux contextes
     case 2: if(disp.state){ disp.duty=Math.min(f[2],disp.dutyMax); disp.state=2; disp.deadman=20;
                             if(!disp.runtime) disp.runtime=3000; } break;
     case 3: if(disp.state) disp.deadman=20; break;
