@@ -248,6 +248,13 @@ function handle02(dv) {
   aweOn = ((dv.getUint8(10) - 1) >> 1) & 1;
   $('vAwe').textContent = aweOn ? 'ACTIF' : 'off';
   $('aweTile').classList.toggle('bad', !aweOn);
+  // reflet direct sur le bouton Phase A (hors test en cours)
+  if(!proto){
+    const b=$('btnProtoA');
+    b.disabled = !aweOn;
+    b.textContent = aweOn ? '▶ Phase A — moteur à blanc (~4 min)'
+                          : '▶ Phase A — activez « Assist with error » au menu';
+  }
   const b11 = dv.getUint8(11) - 1;
   curStreet = (b11 >> 4) & 1;                           // street actif
   $('vPow').textContent = curPower;
@@ -782,6 +789,7 @@ function endProto(aborted){
       +(r.v==='OK'?'OK':r.v==='ATT'?'ATTENTION':'ÉCHEC')+'</span></td><td>'+r.d+'</td></tr>').join('');
   window._lastProto={results:p.results,phase:p.phase};
   proto=null;
+  $('btnProtoA').disabled = !aweOn;
 }
 
 $('btnProtoA').onclick=()=>startProto('A');
