@@ -158,6 +158,33 @@ de test**, même abandonné (+ garde-fou à la fermeture de la page). Le bandeau
 test affiche l'état ; si la commande BLE échoue, l'instruction demande de le
 faire au menu.
 
+### Codes d'erreur — décodage réel (chemin Z8-OSF)
+
+⚠️ **« err06 » n'est PAS une surchauffe.** Le TSDZ8 n'a pas de sonde de température.
+Le SW102 affiche `err06` pour le bit 5 du bitfield moteur, qui est `ERROR_FATAL` —
+partagé par trois causes distinctes.
+
+| Bit | Code affiché | Signification réelle |
+|---|---|---|
+| 0x01 | — | moteur non initialisé (attente de la config) |
+| 0x02 | err02 | capteur de couple |
+| 0x04 | err03 | capteur de cadence |
+| 0x08 | err04 | moteur bloqué |
+| 0x10 | err05 | accélérateur |
+| **0x20** | **err06** | **FATAL** : communication perdue (> 750 ms), sous-tension, ou « moteur tourne seul » (patch P09) |
+| 0x40 | err07 | surintensité |
+| 0x80 | err08 | capteur de vitesse |
+
+⚠️ **Les erreurs sont cumulatives et ne s'effacent jamais.** Le firmware fait `|=`
+et ne remet à zéro que `ERROR_NOT_INIT` : une erreur reste mémorisée jusqu'à la
+**coupure de l'alimentation du moteur**. Redémarrer le display ne suffit pas — pire,
+le redémarrage du display coupe la communication > 750 ms et **provoque lui-même**
+un `err06`.
+
+**Conséquence pratique** : entre deux tests, couper la batterie, pas le display.
+Le dashboard refuse désormais de lancer un protocole si une erreur est déjà
+mémorisée (E08 excepté en phase A) et affiche laquelle.
+
 ### Watchdog télémétrie
 
 Le `gattserverdisconnected` ne part pas toujours quand le display redémarre

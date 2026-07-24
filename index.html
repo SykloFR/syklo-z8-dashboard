@@ -184,6 +184,26 @@ const hist = []; const HIST_MS = 60000;
 const MOTORS = { 0:'Z2', 1:'Z8 48V', 2:'RD45', 3:'Z8 36V', 4:'Z8-OSF 48V', 5:'Z8-OSF 36V' };
 const MODES  = { 0:'power', 1:'torque', 2:'cadence', 3:'eMTB', 4:'hybrid' };
 
+/* Bitfield d'erreurs du moteur (ebike_app.h du firmware OSF 860C) et code
+   affiche par le SW102 sur le chemin Z8-OSF (screen_main.c / screen_boot.c).
+   ATTENTION : "err06" n'est PAS une surchauffe — le TSDZ8 n'a pas de sonde.
+   C'est ERROR_FATAL, partage par trois causes distinctes.
+   ATTENTION (2) : ces bits sont cumulatifs (|=) et le firmware ne les efface
+   JAMAIS (seul ERROR_NOT_INIT est efface). Une erreur reste memorisee jusqu'a
+   la COUPURE DE L'ALIMENTATION DU MOTEUR — redemarrer le display ne suffit pas. */
+const ERRBITS = [
+  {m:0x01, code:'—',     lbl:'moteur non initialisé (attente config)'},
+  {m:0x02, code:'err02', lbl:'capteur de couple'},
+  {m:0x04, code:'err03', lbl:'capteur de cadence'},
+  {m:0x08, code:'err04', lbl:'moteur bloqué'},
+  {m:0x10, code:'err05', lbl:'accélérateur'},
+  {m:0x20, code:'err06', lbl:'FATAL : comm perdue, sous-tension, ou moteur tourne seul'},
+  {m:0x40, code:'err07', lbl:'surintensité'},
+  {m:0x80, code:'err08', lbl:'capteur de vitesse'},
+];
+const errList = e => ERRBITS.filter(b => e & b.m);
+const errTxt  = e => errList(e).map(b => b.code+' '+b.lbl).join(' · ');
+
 // niveau d'assist + mode : lus du paquet SykloConnect 0x01 (déjà émis, +1 encodé)
 let curLvl = null, curMode = null;
 function decode04(dv) {
@@ -245,11 +265,10 @@ function handle04(dv) {
   $('vCur').textContent=d.cur; $('vVolt').textContent=(d.voltX10/10).toFixed(1);
   $('vSpeed').textContent=(d.spdX10/10).toFixed(1); $('vHall').textContent=d.hall;
   $('vPkts').textContent=pkts; $('vLost').textContent=lost;
-  const bits=[]; for (let b=0;b<8;b++) if (d.err&(1<<b)) bits.push(b===7?'E08':'bit'+b);
-  $('vErr').textContent = d.err ? '0x'+d.err.toString(16).padStart(2,'0') : 'OK';
-  $('vErrBits').textContent = bits.join(' ');
+  $('vErr').textContent = d.err ? errList(d.err).map(b=>b.code).join(' ') || '0x'+d.err.toString(16) : 'OK';
+  $('vErrBits').textContent = d.err ? errTxt(d.err) : '';
   $('errTile').classList.toggle('bad', !!d.err);
-  hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps , pmeca:pmeca??0});
+  hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps, err:d.err, pmeca:pmeca??0});
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
   if (recording) { log.push({ t:now, stp:(proto?proto.curId:undefined), lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
   if (proto) protoSample(d, now);
@@ -533,6 +552,9 @@ const col=(ss,k)=>ss.map(x=>x[k]).filter(v=>v!=null);
 // pas, l'erreur est structurelle. Les autres bits restent bloquants.
 function ckErr(ss){ return ss.every(x=>!(x.err & 0x7F)); }
 function hasE08(ss){ return ss.some(x=>x.err & 0x80); }
+// erreurs (hors E08) vues pendant l'etape, pour un message explicite
+function errSeen(ss){ let m=0; for(const x of ss) m|=(x.err||0); return m & 0x7F; }
+function errWhy(ss){ const m=errSeen(ss); return m ? errTxt(m) : ''; }
 function vOK(d){return{v:'OK',d};} function vATT(d){return{v:'ATT',d};} function vKO(d){return{v:'KO',d};}
 
 const PROTO_A=[
@@ -540,7 +562,7 @@ const PROTO_A=[
   instr:"Ne touchez à <b>rien</b> — mains hors des pédales, moteur immobile. (E08 est toléré pendant toute la phase A : roue immobile, chaîne déposée.)",
   check(ss){ const t=col(ss,'torque'); if(!t.length) return vKO('aucune donnée');
     const m=mean(t), sp=mx(t)-mn(t);
-    if(!ckErr(ss)) return vKO('erreur remontée au repos');
+    if(!ckErr(ss)) return vKO(errWhy(ss));
     if(m<120||m>250) return vKO('offset couple '+m.toFixed(0)+' hors famille 120-250');
     if(sp>15) return vATT('offset couple instable (écart '+sp+')');
     if(mx(col(ss,'cur'))>6) return vATT('courant non nul au repos');
@@ -548,7 +570,7 @@ const PROTO_A=[
  {id:'A2',title:'Couple & cadence',dur:30,res:null,
   wait:{label:'Tournez les manivelles pour démarrer l’étape…',cond:d=>d.cad>5},
   instr:"<b>Niveau 0</b> (assistance coupée) — tournez les manivelles à la main, en forçant par à-coups sur la pédale.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur pendant la rotation');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     const dmax=mx(col(ss,'delta')), cadOk=ss.filter(x=>x.cad>0).length/ss.length;
     if(dmax<20) return vKO('capteur de couple ne répond pas (delta max '+dmax+')');
     if(cadOk<0.5) return vATT('cadence détectée sur seulement '+Math.round(cadOk*100)+'% du temps');
@@ -556,7 +578,7 @@ const PROTO_A=[
  {id:'A3',title:'Démarrages multiples',dur:60,res:null,
   wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
   instr:"<b>Niveau 2</b> — enchaînez <b>6 démarrages</b> : pédalez 4 s, arrêt complet 4 s, répétez.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur pendant les démarrages');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     let starts=0, low=true;
     for(const x of ss){ if(low && x.erps>40){starts++; low=false;} if(!low && x.erps<20) low=true; }
     if(starts<4) return vATT(starts+' démarrages détectés (attendu ≥5) — refaire si doute');
@@ -564,7 +586,7 @@ const PROTO_A=[
  {id:'A4',title:'Montée progressive',dur:50,res:null,
   wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
   instr:"Pédalage <b>régulier</b> — montez d’un niveau toutes les <b>10 s</b> : L1 → L5.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur pendant la montée');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     const byLvl={}; for(const x of ss) if(x.lvl!=null&&x.cur!=null){(byLvl[x.lvl]=byLvl[x.lvl]||[]).push(x.cur);}
     const lvls=Object.keys(byLvl).map(Number).sort((a,b)=>a-b);
     if(lvls.length<3) return vATT('seulement '+lvls.length+' niveau(x) vu(s) — montée non testée');
@@ -574,7 +596,7 @@ const PROTO_A=[
  {id:'A5',title:'Haut régime',dur:30,res:null,
   wait:{label:'Accélérez pour démarrer l’étape…',cond:d=>d.erps>150},
   instr:"<b>Niveau 5</b> — pédalez vite, atteignez le régime <b>maximal</b> (roue libre).",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur à haut régime');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     const e=mx(col(ss,'erps')), du=mx(col(ss,'duty'));
     if(e<180) return vKO('ERPS max '+e+' — régime anormalement bas');
     if(e<230) return vATT('ERPS max '+e+' (attendu ≥230 à vide)');
@@ -583,7 +605,7 @@ const PROTO_A=[
   wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
   instr:"<b>Niveau 5</b> — <b>3 sprints violents</b> de 3-4 s, relâchez entre chaque.",
   check(ss){ const c=mx(col(ss,'cur'));
-    if(!ckErr(ss)) return vKO('erreur pendant les sprints');
+    if(!ckErr(ss)) return vKO(errWhy(ss));
     if(c>150) return vKO('courant '+(c*0.16).toFixed(1)+' A au-dessus du plafond attendu');
     let peaks=0, lo=true; for(const x of ss){ if(lo&&x.cur>60){peaks++;lo=false;} if(!lo&&x.cur<25) lo=true; }
     if(peaks<2) return vATT(peaks+' pic(s) détecté(s) — sprints trop timides ?');
@@ -593,14 +615,14 @@ const PROTO_A=[
 const PROTO_B=[
  {id:'B1',title:'Mise en place',dur:15,res:30,
   instr:"Chaîne montée, <b>braquet médian FIXE</b> (ne plus changer de vitesse pendant tout le test). Ne pédalez pas.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur à l’arrêt');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     proto.baseVolt=mean(col(ss,'voltX10'));
     if(mx(col(ss,'cur'))>6) return vATT('courant non nul à l’arrêt');
     return vOK('repos OK, tension '+(proto.baseVolt/10).toFixed(1)+' V'); }},
  {id:'B2',title:'Palier modéré',dur:60,res:50,
   wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
   instr:"<b>Niveau 3</b> — cadence régulière <b>60-70 rpm</b>.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur au palier');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     const p=col(ss,'pow').filter(x=>x>0), pm=col(ss,'pmeca').filter(x=>x>0);
     if(!p.length) return vATT('puissance batterie non lue (paquet 0x02 absent ?)');
     const r=[]; for(const x of ss) if(x.pow>50&&x.pmeca>0) r.push(x.pmeca/x.pow);
@@ -613,7 +635,7 @@ const PROTO_B=[
  {id:'B3',title:'Couple maximal',dur:60,res:100,
   wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
   instr:"<b>RÉSISTANCE MAX</b> — <b>Niveau 5</b>, cadence <b>basse</b>, forcez comme dans une côte raide. C’est l’étape qui fait vraiment travailler le moteur.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur sous couple max (E07 ?)');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     const c=mx(col(ss,'cur')), sag=proto.baseVolt?(proto.baseVolt-mn(col(ss,'voltX10'))):null;
     if(c>150) return vKO('courant '+(c*0.16).toFixed(1)+' A au-dessus du plafond');
     let det='courant max '+(c*0.16).toFixed(1)+' A';
@@ -624,7 +646,7 @@ const PROTO_B=[
  {id:'B4',title:'Pic de puissance',dur:25,res:100,
   wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
   instr:"<b>Sprint maximal</b> 5-10 s, puis maintenez l’effort. Résistance toujours au max.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur au pic');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     const p=mx(col(ss,'pow')), c=mx(col(ss,'cur'));
     if(c>150) return vKO('courant au-dessus du plafond');
     let det='Pbatt max '+p+' W, courant max '+(c*0.16).toFixed(1)+' A';
@@ -633,7 +655,7 @@ const PROTO_B=[
  {id:'B5',title:'Endurance',dur:90,res:80,
   wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
   instr:"<b>Niveau 4</b> — effort <b>soutenu et constant</b> pendant 90 s. Ne relâchez pas.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur pendant l’endurance');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     const h=Math.floor(ss.length/2), c1=mean(col(ss.slice(0,h),'cur')), c2=mean(col(ss.slice(h),'cur'));
     const drift=c1>5?Math.abs(c2-c1)/c1:0;
     let det='courant moy '+((c1+c2)/2*0.16).toFixed(1)+' A, dérive '+(drift*100).toFixed(0)+'%';
@@ -642,7 +664,7 @@ const PROTO_B=[
  {id:'B6',title:'Coupure nette',dur:15,res:50,
   wait:{label:'Pédalez pour démarrer l’étape…',cond:d=>d.cad>10},
   instr:"Pédalez 5 s puis <b>STOP NET</b> — ne touchez plus les pédales jusqu’à la fin du chrono.",
-  check(ss){ if(!ckErr(ss)) return vKO('erreur à la coupure');
+  check(ss){ if(!ckErr(ss)) return vKO(errWhy(ss));
     let lastPedal=null, cut=null;
     for(const x of ss){ if(x.cad>5) lastPedal=x.t; else if(lastPedal&&cut==null&&x.duty<10) cut=x.t; }
     if(!lastPedal) return vATT('pédalage non détecté');
@@ -657,6 +679,18 @@ function protoTotal(steps,from,elapsed){ let t=0; for(let i=from;i<steps.length;
 
 function startProto(phase){
   if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
+  // Les erreurs moteur sont CUMULATIVES et jamais effacees par le firmware :
+  // demarrer un test avec une erreur deja memorisee fausse tous les verdicts
+  // (et bloque l'assistance). E08 est tolere en phase A (roue immobile).
+  const cur = hist.length ? hist[hist.length-1].err : 0;
+  const blocking = phase==='A' ? (cur & 0x7F) : cur;
+  if(blocking){
+    alert('Le moteur signale déjà : '+errTxt(cur)+'\n\n'
+      +'Ces erreurs sont MÉMORISÉES par le moteur et ne s’effacent pas toutes seules.\n'
+      +'→ Coupez l’alimentation du MOTEUR (batterie), pas seulement le display, puis rallumez.\n\n'
+      +'Test non démarré.');
+    return;
+  }
   if(phase==='B' && !trainerDev && !confirm('Home trainer non connecté : la résistance devra être réglée à la main. Continuer ?')) return;
   const steps=phase==='A'?PROTO_A:PROTO_B;
   log=[]; recording=true; $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
