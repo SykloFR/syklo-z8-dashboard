@@ -203,6 +203,7 @@
     <div id="benchAlive"><div class="l">Marge dead-man</div><div class="v" id="benchAliveV">–</div></div>
   </div>
   <div id="benchDiag" style="color:var(--dim);font-size:12px;margin-top:8px"></div>
+  <div id="linkLog" style="color:var(--dim);font-size:12px;margin-top:2px"></div>
   <div class="hint">
     Séquence : <b>Armer</b> → le display affiche l'écran de confirmation → appuyez
     <b>M</b> puis <b>▲</b> sur le display → <b>Appliquer</b>. Le moteur s'arrête seul si le
@@ -468,6 +469,63 @@ setInterval(()=>{
    et un lien fantome pouvait survivre — c'est ce qui bloquait le flash DFU. */
 let sw102Dev = null;
 
+/* Journal des evenements de liaison. Sans lui, une deconnexion BLE est un
+   mystere : on ne sait ni quand, ni combien de fois, ni si la reconnexion a
+   suivi. C'est ce qui a rendu opaque le bug « le BLE se coupe a l'armement »
+   (en realite : le display raccrochait a connexion + 5 s, cf. firmware
+   2.18.5). */
+const linkEvents = [];
+function linkLog(msg){
+  linkEvents.push(new Date().toLocaleTimeString()+' — '+msg);
+  while(linkEvents.length > 4) linkEvents.shift();
+  const el = $('linkLog'); if(el) el.textContent = linkEvents.join('   ·   ');
+  console.log('[BLE]', msg);
+}
+
+function sw102ConnectedUi(){
+  $('status').textContent = '(connecté : '+(sw102Dev.name||'SW102')+')';
+  $('btnConnect').textContent = (sw102Dev.name || 'SW102') + ' connecté';
+  $('btnConnect').className = 'ok';
+  $('btnRec').disabled = $('btnStats').disabled = false;
+  $('btnDisconnect').disabled = false;
+  benchUi();
+}
+
+async function sw102Subscribe(dev){
+  const gatt = await dev.gatt.connect();
+  const svc = await gatt.getPrimaryService(NUS_SVC);
+  const ch = await svc.getCharacteristic(NUS_TX);
+  await ch.startNotifications();
+  ch.addEventListener('characteristicvaluechanged', onNotify);
+  // voie d'écriture : réservée à BLE_BENCH (cf. commentaire sur NUS_RX)
+  try { nusRx = await svc.getCharacteristic(NUS_RX); } catch(_) { nusRx = null; }
+}
+
+/* Reconnexion AUTOMATIQUE, sans chooser : Web Bluetooth permet de rappeler
+   gatt.connect() sur le device deja choisi. Une coupure transitoire (le
+   firmware < 2.18.5 raccrochait de lui-meme a connexion + 5 s) devient un
+   trou de quelques secondes au lieu d'une seance perdue. Le moteur, lui,
+   est deja arrete par le dead-man du display — la reconnexion ne relance
+   rien : il faut rearmer. */
+let sw102Reconnecting = false;
+async function sw102Reconnect(){
+  if(sw102Reconnecting || !sw102Dev) return;
+  sw102Reconnecting = true;
+  try{
+    for(let i=1; i<=5 && sw102Dev; i++){
+      $('status').textContent = '(reconnexion auto '+i+'/5…)';
+      try{
+        await sw102Subscribe(sw102Dev);
+        sw102ConnectedUi();
+        linkLog('reconnexion auto réussie (essai '+i+')');
+        return;
+      }catch(e){ await new Promise(r=>setTimeout(r, 1000*i)); }
+    }
+    if(sw102Dev){ $('status').textContent = '(reconnexion échouée — bouton Connecter)';
+                  linkLog('reconnexion auto échouée après 5 essais'); }
+  } finally { sw102Reconnecting = false; }
+}
+
 $('btnConnect').onclick = async () => {
   try {
     const dev = await navigator.bluetooth.requestDevice({ filters:[{services:[NUS_SVC]}], optionalServices:[NUS_SVC] });
@@ -475,26 +533,19 @@ $('btnConnect').onclick = async () => {
     $('status').textContent = '(connexion à '+(dev.name||'?')+'…)';
     $('btnConnect').textContent = 'Connexion…'; $('btnConnect').className = 'busy';
     dev.addEventListener('gattserverdisconnected', () => {
+      linkLog('déconnexion BLE (événement GATT)'
+        + (benchAck ? ' — dernier état display il y a '+((Date.now()-benchAck.at)/1000).toFixed(1)+' s' : ''));
       $('status').textContent='(déconnecté)';
       $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
       $('btnDisconnect').disabled = true;
       // perte du lien pendant un run banc : on lâche tout de suite le pilotage
       // (le dead-man du display couperait de toute façon sous 2 s).
       nusRx = null; benchAbort('lien BLE perdu'); benchUi();
+      sw102Reconnect();
     });
-    const gatt = await dev.gatt.connect();
-    const svc = await gatt.getPrimaryService(NUS_SVC);
-    const ch = await svc.getCharacteristic(NUS_TX);
-    await ch.startNotifications();
-    ch.addEventListener('characteristicvaluechanged', onNotify);
-    // voie d'écriture : réservée à BLE_BENCH (cf. commentaire sur NUS_RX)
-    try { nusRx = await svc.getCharacteristic(NUS_RX); } catch(_) { nusRx = null; }
-    benchUi();
-    $('status').textContent = '(connecté : '+(dev.name||'SW102')+')';
-    $('btnConnect').textContent = (dev.name || 'SW102') + ' connecté';
-    $('btnConnect').className = 'ok';
-    $('btnRec').disabled = $('btnStats').disabled = false;
-    $('btnDisconnect').disabled = false;
+    await sw102Subscribe(dev);
+    linkLog('connecté à '+(dev.name||'SW102'));
+    sw102ConnectedUi();
   } catch (e) {
     $('status').textContent = '(erreur : '+e.message+')';
     $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
@@ -507,8 +558,11 @@ $('btnConnect').onclick = async () => {
 $('btnDisconnect').onclick = async () => {
   if(bench) await benchStop('déconnexion');
   nusRx = null;
-  try { if(sw102Dev && sw102Dev.gatt.connected) sw102Dev.gatt.disconnect(); } catch(_){}
-  sw102Dev = null;
+  // sw102Dev est mis a null AVANT gatt.disconnect() : l'evenement
+  // gattserverdisconnected qui suit ne doit pas relancer la reconnexion auto.
+  const dev = sw102Dev; sw102Dev = null;
+  try { if(dev && dev.gatt.connected) dev.gatt.disconnect(); } catch(_){}
+  linkLog('déconnexion demandée (bouton)');
   $('status').textContent = '(déconnecté — le display est libre pour un flash DFU)';
   $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
   $('btnDisconnect').disabled = true;
