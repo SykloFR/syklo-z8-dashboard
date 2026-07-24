@@ -13,6 +13,11 @@
   .bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; align-items:center; }
   button { background:var(--acc); border:0; color:#fff; padding:8px 14px; border-radius:6px; font-weight:600; cursor:pointer; }
   button.sec { background:#2a3340; }
+  /* Etat connecte : le bouton lui-meme porte l'information, c'est la ou l'oeil
+     va naturellement apres avoir clique. */
+  button.ok { background:#1e6b3f; }
+  button.ok::before { content:'✓ '; }
+  button.busy { background:#5a4a1e; }
   button:disabled { opacity:.4; cursor:default; }
   #status { color:var(--dim); }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
@@ -242,15 +247,24 @@ $('btnConnect').onclick = async () => {
   try {
     const dev = await navigator.bluetooth.requestDevice({ filters:[{services:[NUS_SVC]}], optionalServices:[NUS_SVC] });
     $('status').textContent = '(connexion à '+(dev.name||'?')+'…)';
-    dev.addEventListener('gattserverdisconnected', () => { $('status').textContent='(déconnecté)'; });
+    $('btnConnect').textContent = 'Connexion…'; $('btnConnect').className = 'busy';
+    dev.addEventListener('gattserverdisconnected', () => {
+      $('status').textContent='(déconnecté)';
+      $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
+    });
     const gatt = await dev.gatt.connect();
     const svc = await gatt.getPrimaryService(NUS_SVC);
     const ch = await svc.getCharacteristic(NUS_TX);
     await ch.startNotifications();
     ch.addEventListener('characteristicvaluechanged', onNotify);
     $('status').textContent = '(connecté : '+(dev.name||'SW102')+')';
+    $('btnConnect').textContent = (dev.name || 'SW102') + ' connecté';
+    $('btnConnect').className = 'ok';
     $('btnRec').disabled = $('btnStats').disabled = false;
-  } catch (e) { $('status').textContent = '(erreur : '+e.message+')'; }
+  } catch (e) {
+    $('status').textContent = '(erreur : '+e.message+')';
+    $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
+  }
 };
 
 /* ---------------------------------------------------------------------------
@@ -312,6 +326,7 @@ function onTrainer(parser) {
 $('btnTrainer').onclick = async () => {
   try {
     $('vTrainerSrc').textContent = 'recherche…';
+    $('btnTrainer').textContent = 'Recherche…'; $('btnTrainer').className = 'sec busy';
     const dev = await navigator.bluetooth.requestDevice({
       filters: [{ services:[CPS_SVC] }, { services:[FTMS_SVC] }],
       optionalServices: [CPS_SVC, FTMS_SVC]
@@ -319,6 +334,7 @@ $('btnTrainer').onclick = async () => {
     trainerDev = dev;
     dev.addEventListener('gattserverdisconnected', () => {
       $('vTrainerSrc').textContent = 'déconnecté';
+      $('btnTrainer').textContent = 'Connecter home trainer'; $('btnTrainer').className = 'sec';
       $('vPmeca').textContent = '–'; $('vRatio').textContent = '–'; pmeca = null;
     });
     const gatt = await dev.gatt.connect();
@@ -335,8 +351,11 @@ $('btnTrainer').onclick = async () => {
     await ch.startNotifications();
     ch.addEventListener('characteristicvaluechanged', onTrainer(parser));
     $('vTrainerSrc').textContent = (dev.name || 'trainer') + ' · ' + kind;
+    $('btnTrainer').textContent = (dev.name || 'Trainer') + ' connecté';
+    $('btnTrainer').className = 'sec ok';
   } catch (e) {
     $('vTrainerSrc').textContent = 'erreur : ' + e.message;
+    $('btnTrainer').textContent = 'Connecter home trainer'; $('btnTrainer').className = 'sec';
   }
 };
 
