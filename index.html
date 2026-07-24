@@ -78,6 +78,7 @@
 <h1>Syklo Z8-OSF — Télémétrie bench <span id="status">(déconnecté)</span></h1>
 <div class="bar">
   <button id="btnConnect">Connecter (BLE)</button>
+  <button id="btnDisconnect" class="sec" disabled>Déconnecter</button>
   <button id="btnTrainer" class="sec">Connecter home trainer</button>
   <button id="btnRec" class="sec" disabled>● Enregistrer</button>
   <button id="btnDl" class="sec" disabled>Télécharger JSONL</button>
@@ -450,17 +451,26 @@ setInterval(()=>{
   }
 },1000);
 
+/* Reference du device conservee pour pouvoir RELACHER la liaison.
+   ⚠ Le nRF51 du SW102 n'accepte qu'UN SEUL central a la fois : tant que ce
+   navigateur tient le lien GATT, ni le telephone ni un outil DFU ne peuvent se
+   connecter au display. Sans bouton de deconnexion il fallait fermer l'onglet,
+   et un lien fantome pouvait survivre — c'est ce qui bloquait le flash DFU. */
+let sw102Dev = null;
+
 $('btnConnect').onclick = async () => {
   try {
     const dev = await navigator.bluetooth.requestDevice({ filters:[{services:[NUS_SVC]}], optionalServices:[NUS_SVC] });
+    sw102Dev = dev;
     $('status').textContent = '(connexion à '+(dev.name||'?')+'…)';
     $('btnConnect').textContent = 'Connexion…'; $('btnConnect').className = 'busy';
     dev.addEventListener('gattserverdisconnected', () => {
       $('status').textContent='(déconnecté)';
       $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
+      $('btnDisconnect').disabled = true;
       // perte du lien pendant un run banc : on lâche tout de suite le pilotage
       // (le dead-man du display couperait de toute façon sous 2 s).
-      nusRx = null; benchAbort('lien BLE perdu');
+      nusRx = null; benchAbort('lien BLE perdu'); benchUi();
     });
     const gatt = await dev.gatt.connect();
     const svc = await gatt.getPrimaryService(NUS_SVC);
@@ -474,10 +484,25 @@ $('btnConnect').onclick = async () => {
     $('btnConnect').textContent = (dev.name || 'SW102') + ' connecté';
     $('btnConnect').className = 'ok';
     $('btnRec').disabled = $('btnStats').disabled = false;
+    $('btnDisconnect').disabled = false;
   } catch (e) {
     $('status').textContent = '(erreur : '+e.message+')';
     $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
   }
+};
+
+/* Relacher la liaison — INDISPENSABLE avant un flash DFU du display : le nRF51
+   n'accepte qu'un central a la fois, et tant que ce navigateur tient le lien,
+   l'outil DFU ne peut pas prendre la main. */
+$('btnDisconnect').onclick = async () => {
+  if(bench) await benchStop('déconnexion');
+  nusRx = null;
+  try { if(sw102Dev && sw102Dev.gatt.connected) sw102Dev.gatt.disconnect(); } catch(_){}
+  sw102Dev = null;
+  $('status').textContent = '(déconnecté — le display est libre pour un flash DFU)';
+  $('btnConnect').textContent = 'Connecter (BLE)'; $('btnConnect').className = '';
+  $('btnDisconnect').disabled = true;
+  benchUi();
 };
 
 /* ---------------------------------------------------------------------------
