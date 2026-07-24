@@ -126,11 +126,12 @@
       d'abord</b> (panneau ci-dessous), le protocole fait le reste.<br>
       <b>A</b> = chaîne DÉPOSÉE — diagnostic avant montage : capteurs au repos,
       cadence, décollage, paliers croissants, haut régime (Hall + FOC), démarrages
-      répétés, échelon, roue libre, <b>frein</b>.<br>
-      <b>B</b> = chaîne montée + home trainer, résistance au maximum — <b>capteur de
-      couple en charge</b>, <b>capteur de vitesse</b> (remettez l'aimant si possible),
-      montée en charge, couple, pic, endurance, coupure. Un seul bloc (display
-      2.18.7 : budget de marche 300 s).<br>
+      répétés, échelon, roue libre.<br>
+      <b>B</b> = chaîne montée, <b>le plus grand braquet</b> + résistance au maximum
+      (l'absorption du trainer croît avec la vitesse : ~11 W/km/h) — capteur de
+      couple en charge, capteur de vitesse, montée, couple, <b>pic à 85 %</b>
+      (test de la régulation 23 A), endurance, coupure. Un seul bloc (display
+      2.18.7).<br>
       L'enregistrement JSONL démarre et se télécharge automatiquement (champ
       <code>bset</code> = consigne envoyée).
     </div>
@@ -889,20 +890,9 @@ const PROTO_A=[
     const dt=(stopAt-cutAt)/1000; proto.coastTime=dt;
     return vOK('roue libre '+dt.toFixed(2)+' s (±0,2 s) depuis '+peak+' ERPS — métrique de référence, à comparer entre moteurs'); }},
 
- /* Capteur de FREIN : on utilise le garde-fou existant. Le frein coupe le mode
-    banc cote display, qui rapporte la raison en 0x06 — la coupure elle-meme
-    EST la preuve que le capteur fonctionne, de bout en bout. `expectStop` dit
-    au moteur du protocole de ne PAS traiter cet arret comme un abandon. */
- {id:'A9',title:'Capteur de frein',duty:15,ramp:20,dur:30,expectStop:true,
-  instr:"Le moteur tourne doucement (15 %). <b>Actionnez un levier de frein</b> — la coupure doit être immédiate et le display annoncer « frein ».",
-  check(ss){
-    const r = benchAck ? benchAck.reason : null;
-    if(r===4){ proto.brakeOk=true;
-      return vOK('frein détecté : coupure immédiate, raison « frein » rapportée par le display'); }
-    if(!bench || !bench.engagedSeen){ proto.brakeOk=false;
-      return vATT('le mode banc s’est arrêté mais sans rapporter « frein » ('+(BENCH_STOP_TXT[r]||('raison '+r))+') — recommencez en freinant franchement'); }
-    proto.brakeOk=false;
-    return vKO('30 s sans coupure — capteur de frein muet (ou frein non actionné)'); }},
+ /* Pas d'etape frein : les montages Syklo n'ont pas de capteur de frein
+    (constat atelier 2026-07-24). Le garde-fou « frein = arret » du mode banc
+    reste dans le firmware mais ne peut jamais se declencher sur ces velos. */
 ];
 
 // Verdict d'un palier : enregistre la mesure ET la range dans proto.plateaus,
@@ -920,7 +910,7 @@ function ckPlateau(ss){
 
 const PROTO_B=[
  {id:'B1',title:'Mise en place',dur:10,duty:0,res:100,
-  instr:"Chaîne montée, <b>braquet médian FIXE</b> (ne plus changer de vitesse). Résistance du trainer au <b>maximum</b>. Ne touchez pas aux pédales.",
+  instr:"Chaîne montée, <b>le plus GRAND braquet</b> (petit pignon — ne plus changer de vitesse ensuite). Résistance du trainer au <b>maximum</b>. Ne touchez pas aux pédales.<br>Pourquoi le grand braquet : l’absorption du trainer croît avec la vitesse de la roue (~11 W par km/h mesuré) — pour charger le moteur il faut de la vitesse.",
   check(ss){ const g=errGate(ss); if(g) return g;
     proto.baseVolt=mean(col(ss,'voltX10'));
     if(mx(col(ss,'cur'))>6) return vATT('courant non nul à l’arrêt');
@@ -932,16 +922,20 @@ const PROTO_B=[
     (Chaine deposee c'est impossible : aucun couple sur un axe libre — A2 ne
     teste que la cadence.) */
  {id:'B1b',title:'Capteur de couple en charge (manuel)',dur:15,duty:0,manual:true,res:100,
-  instr:"Moteur à l’arrêt, résistance au <b>maximum</b> : appuyez <b>fort</b> sur la pédale avant, plusieurs coups francs. La roue ne doit quasiment pas tourner.",
+  /* L'appui STATIQUE ne charge rien : a l'arret le trainer ne resiste presque
+     pas, la pedale tourne librement (delta fige a 28 au run du 2026-07-24 —
+     meme physique que l'absorption ∝ vitesse). C'est l'ACCELERATION du volant
+     d'inertie qui demande du couple : pedaler par a-coups francs. */
+  instr:"Moteur à l’arrêt : <b>pédalez par à-coups francs</b>, 3-4 accélérations bien appuyées (c’est le volant d’inertie du trainer qui fait la charge, pas l’appui statique).",
   check(ss){ const g=errGate(ss); if(g) return g;
     const dmax=mx(col(ss,'delta'));
     proto.torqueLoadDelta=dmax;
-    if(dmax<20) return vKO('capteur de couple muet sous charge (delta max '+dmax+')');
-    if(dmax<60) return vATT('réponse faible sous charge (delta max '+dmax+') — appuyer plus fort, ou capteur à surveiller');
+    if(dmax<40) return vKO('capteur de couple muet sous charge (delta max '+dmax+') — ou à-coups trop timides');
+    if(dmax<80) return vATT('réponse faible sous charge (delta max '+dmax+') — accélérer plus franchement, ou capteur à surveiller');
     return vOK('delta max '+dmax+' sous charge — le capteur de couple répond'); }},
 
- {id:'B2',title:'Montée en charge',duty:35,ramp:8,settle:5,dur:15,res:100,
-  instr:"Montée progressive à 35 % contre la résistance maximale. La chaîne se tend — restez à l’écart.",
+ {id:'B2',title:'Montée en charge',duty:45,ramp:8,settle:5,dur:15,res:100,
+  instr:"Montée progressive à 45 % contre la résistance maximale. La chaîne se tend — restez à l’écart.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const c=mean(col(ss,'cur')), p=col(ss,'pow').filter(x=>x>0), pm=col(ss,'pmeca').filter(x=>x>0);
     let det='courant moy '+A(c)+' A';
@@ -963,7 +957,7 @@ const PROTO_B=[
     if(!proto.speedSeen) return vATT(det);
     return vOK(det); }},
 
- {id:'B3',title:'Palier de couple',duty:45,ramp:20,settle:5,dur:25,res:100,
+ {id:'B3',title:'Palier de couple',duty:60,ramp:20,settle:5,dur:25,res:100,
   instr:"Palier soutenu — c’est l’étape qui fait vraiment travailler le moteur. Surveillez la température du carter à la main <b>après</b> le test.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const c=mx(col(ss,'cur')), sag=proto.baseVolt?(proto.baseVolt-mn(col(ss,'voltX10'))):null;
@@ -975,19 +969,24 @@ const PROTO_B=[
     if(c<60) return vATT(det+' — moteur peu chargé, résistance insuffisante');
     return vOK(det+', régulation au cap'); }},
 
- {id:'B4',title:'Pic de puissance',duty:60,ramp:60,settle:3,dur:15,res:100,
-  instr:"Montée brutale à 60 % sous charge maximale. Pic de courant et de puissance.",
+ {id:'B4',title:'Pic de puissance',duty:85,ramp:30,settle:3,dur:15,res:100,
+  instr:"Montée à 85 % sous charge maximale — c’est ici que la régulation de courant (23 A) doit plafonner. Restez à l’écart de la transmission.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const c=mx(col(ss,'cur')), p=mx(col(ss,'pow'));
+    /* FOC en charge : l'angle croit avec le courant (elucide au run du
+       2026-07-24 : 0-3 a vide, 10 a 15,7 A). On le releve au pic. */
+    const hiC=ss.filter(x=>x.cur>40);
+    if(hiC.length) proto.focLoad=mean(col(hiC,'foc'));
     let det='Pbatt max '+p+' W, courant max '+A(c)+' A';
     if(c>150) return vKO(det+' — courant au-dessus du plafond');
-    return vOK(det); }},
+    if(c<80) return vATT(det+' — la régulation n’a pas été approchée (vitesse roue trop faible ? braquet ?)');
+    return vOK(det+(c>=130?' — régulation au cap, comportement attendu':'')); }},
 
  /* Plus de rearmement intermediaire : le budget de marche du display est
     passe de 120 a 300 s en 2.18.6 — la phase B tient d'un seul trait
     (~180 s de rotation). Avec un display < 2.18.6, le mode coupera a 120 s
     en pleine endurance : flasher d'abord. */
- {id:'B5',title:'Endurance',duty:40,ramp:20,settle:5,dur:75,res:100,
+ {id:'B5',title:'Endurance',duty:55,ramp:20,settle:5,dur:75,res:100,
   instr:"Palier long sous charge. On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const h=Math.floor(ss.length/2);
@@ -1000,7 +999,7 @@ const PROTO_B=[
     if(de<-0.15) return vATT(det+' — le régime s’effondre à consigne constante');
     return vOK(det+' — stable'); }},
 
- {id:'B6',title:'Coupure sous charge',duty:t=>(t<5?45:0),ramp:20,dur:12,res:100,
+ {id:'B6',title:'Coupure sous charge',duty:t=>(t<5?50:0),ramp:20,dur:12,res:100,
   instr:"Coupure nette sous charge. Le duty doit retomber immédiatement — c’est le comportement mis en cause par l’over-run constaté sur route.",
   check(ss){ const g=errGate(ss); if(g) return g;
     let cutAt=null, zeroAt=null;
@@ -1245,8 +1244,10 @@ function endProto(aborted){
     ['Vitesse roue', p.speedSeen==null?'non testée (phase B, aimant requis)'
       :p.speedSeen?'OK'+(p.speedRatio!=null?' — '+(p.speedRatio*100).toFixed(1)+' km/h à 100 ERPS':'')
       :'MUETTE (aimant en place ?)'],
-    ['Frein', p.brakeOk==null?'non testé (phase A, étape A9)':p.brakeOk?'OK — coupure + raison rapportée':'à revérifier (A9)'],
-    ['Angle FOC', p.focHigh!=null?p.focHigh.toFixed(1)+' à haut régime (anomalie connue si ≈ 0 — non élucidée)':'non relevé'],
+    ['Frein', 'non applicable — pas de capteur de frein sur les montages Syklo'],
+    ['Angle FOC', (p.focHigh!=null?p.focHigh.toFixed(1)+' à vide':'–')
+      +(p.focLoad!=null?' · '+p.focLoad.toFixed(1)+' en charge':'')
+      +' (croît avec le courant : ≈ 0 à vide est normal — élucidé le 2026-07-24)'],
     ['Batterie', p.baseVolt?(p.baseVolt/10).toFixed(1)+' V à vide'+(p.sagMax!=null?' · sag max '+(p.sagMax/10).toFixed(1)+' V':''):'non relevée (phase B)'],
   ];
   $('pVerdict').innerHTML='<tr><th>Étape</th><th>Verdict</th><th>Détail</th></tr>'
@@ -1262,7 +1263,7 @@ function endProto(aborted){
                      sensors:{torqueOffset:p.torqueOffset, torqueLoadDelta:p.torqueLoadDelta,
                               deltaFree:p.deltaFree, cadPct:p.cadPct, hallCount:p.hallCount,
                               speedSeen:p.speedSeen, speedRatio:p.speedRatio,
-                              brakeOk:p.brakeOk, focHigh:p.focHigh,
+                              focHigh:p.focHigh, focLoad:p.focLoad,
                               baseVolt:p.baseVolt, sagMax:p.sagMax}};
   benchUi();
 }

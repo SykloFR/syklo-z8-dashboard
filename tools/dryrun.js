@@ -159,11 +159,6 @@ while(ctx('proto') && guard++ < 400){
   if(ctx('proto') && ctx('proto').curId==='A2'){
     const s = ctx('proto').samples; if(s.length) { s[s.length-1].cad = 40; s[s.length-1].delta = 30; }
   }
-  // l'operateur freine pendant A9 (apres ~3 s) : le display coupe et rapporte
-  if(ctx('proto') && ctx('proto').curId==='A9' && disp.state){
-    advance.a9=(advance.a9||0)+1;
-    if(advance.a9 > 3){ disp.reason=4; disp.state=0; disp.duty=0; }
-  }
 }
 console.log('\n--- enchainement ---');
 OUT.steps.forEach(l=>console.log('  '+l));
@@ -178,7 +173,7 @@ console.log('ERREURS :', OUT.errors.length ? OUT.errors : 'aucune');
 
 // ---- 3. phase B : deux blocs, rearmement au milieu ---------------------
 console.log('\n=== 2bis. phase A avec 60% de perte sur les trames 0x06 ===');
-LOSS = 60; sandbox.window._lastProto = null; advance.a9 = 0;
+LOSS = 60; sandbox.window._lastProto = null;
 OUT.steps.length = 0; OUT.alerts.length = 0; advance.last = null;
 ctx('benchArm()'); await advance(600); armPhysically(); await advance(1000);
 ctx("startProto('A')");
@@ -186,8 +181,8 @@ if(OUT.alerts.length) console.log('ALERTES :', OUT.alerts);
 guard = 0;
 while(ctx('proto') && guard++ < 400) await advance(1000);
 const rA2 = sandbox.window._lastProto ? sandbox.window._lastProto.results : [];
-console.log('  etapes terminees :', rA2.length, '/ 13');
-console.log('  resultat :', rA2.length>=13 ? 'AUCUNE interruption — la seance a tenu' : 'SEANCE COUPEE');
+console.log('  etapes terminees :', rA2.length, '/ 12');
+console.log('  resultat :', rA2.length>=12 ? 'AUCUNE interruption — la seance a tenu' : 'SEANCE COUPEE');
 LOSS = 0;
 
 console.log('\n=== 3. phase B (2 blocs) ===');
