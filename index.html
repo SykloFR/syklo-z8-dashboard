@@ -122,16 +122,17 @@
     </div>
     <div class="hint">
       Les deux phases pilotent le moteur par le <b>mode banc</b> : aucun pédalage,
-      c'est le dashboard qui impose la consigne de duty. <b>Armez le mode banc
-      d'abord</b> (panneau ci-dessous), le protocole fait le reste.<br>
+      c'est le dashboard qui impose la consigne. Cliquez une phase : la demande
+      d'armement part toute seule, il ne reste que la <b>confirmation sur le
+      display</b> (M puis ▲) et le test s'enchaîne.<br>
       <b>A</b> = chaîne DÉPOSÉE — diagnostic avant montage : capteurs au repos,
       cadence, décollage, paliers croissants, haut régime (Hall + FOC), démarrages
       répétés, échelon, roue libre.<br>
       <b>B</b> = chaîne montée, <b>le plus grand braquet</b> + résistance au maximum
       (l'absorption du trainer croît avec la vitesse : ~11 W/km/h) — capteur de
-      couple en charge, capteur de vitesse, montée, couple, <b>pic à 85 %</b>
-      (test de la régulation 23 A), endurance, coupure. Un seul bloc (display
-      2.18.7).<br>
+      couple en charge, capteur de vitesse, montée, couple, <b>démarrages en
+      charge</b> (le pic de courant se tire sur l'inertie du volant — test de la
+      régulation 23 A), endurance, coupure. Un seul bloc (display 2.18.7).<br>
       L'enregistrement JSONL démarre et se télécharge automatiquement (champ
       <code>bset</code> = consigne envoyée).
     </div>
@@ -329,6 +330,7 @@ let curPower = null, curStreet = null;
 // visible depuis onNotify (log JSONL) sans dependre de l'ordre d'evaluation.
 var pmeca = null;
 var proto = null;   // etat du protocole guide (defini plus bas)
+var pendingProto = null;  // {phase, until} : phase a lancer des l'armement confirme
 function handle02(dv) {
   curPower = (dv.getUint8(9) - 1) * 10;                 // W
   // octet 10 (encode +1) : b0 throttle, b1 assist-with-error, b6 motor type…
@@ -364,7 +366,17 @@ function handle06(dv) {
                reason:dv.getUint8(4), deadman:dv.getUint8(5),
                runtime:dv.getUint16(6,true), at:Date.now() };
   if (bench) {
-    if (benchAck.state !== 0) bench.engagedSeen = true;
+    if (benchAck.state !== 0){
+      const first = !bench.engagedSeen;
+      bench.engagedSeen = true;
+      // une phase attendait l'armement : elle demarre maintenant
+      if(first && pendingProto && !proto){
+        if(Date.now() < pendingProto.until){
+          const ph = pendingProto.phase; pendingProto = null;
+          setTimeout(()=>startProto(ph), 0);
+        } else pendingProto = null;
+      }
+    }
     // Le display a quitte le mode banc de son cote : on coupe le pilotage tout
     // de suite et on affiche la raison qu'il nous donne.
     // On n'y reagit qu'apres avoir vu le mode REELLEMENT engage : sinon les
@@ -1005,28 +1017,41 @@ const PROTO_B=[
     if(rn.out) return vATT(det+' — courant hors référence à consigne égale');
     return vOK(det); }},
 
- {id:'B4',title:'Pic de puissance',duty:85,ramp:30,settle:3,dur:15,res:100,
-  instr:"Montée à 85 % sous charge maximale — c’est ici que la régulation de courant (23 A) doit plafonner. Restez à l’écart de la transmission.",
+ /* Le courant de crete se tire sur l'INERTIE du volant (idee atelier
+    2026-07-28) : en regime permanent le trainer n'absorbe que ~430-490 W
+    mecaniques a 34 km/h — le cap de courant n'etait atteint que de justesse.
+    Chaque re-acceleration du volant tire le courant a la regulation, quelle
+    que soit l'absorption. stepChange assume : c'est un test de demarrage. */
+ /* Relances 30 <-> 90 % (demande atelier) : le volant ne retombe jamais,
+    chaque relance part d'une vitesse plus haute -> le courant tient le cap
+    plus longtemps et le pic de puissance monte. Plafond physique : 23 A
+    (ecretage materiel 143 ADC) x ~48 V = ~1100 W — au-dela il faudrait un
+    build banc a limite relevee (meme famille que le build E07 a marge
+    reduite). 90 % = plafond du display en charge. */
+ {id:'B4',title:'Relances en charge (pic)',duty:t=>(t%8<4?90:30),ramp:250,stepChange:true,dur:24,res:100,
+  instr:"<b>3 relances franches</b> automatiques (30 → 90 %) contre le volant lancé. Le courant doit tenir la régulation (23 A) à chaque relance — pic attendu ~1000-1100 W. Restez à l’écart de la transmission.",
   check(ss){ const g=errGate(ss); if(g) return g;
+    let pulses=0, lo=true;
+    for(const x of ss){ if(lo && x.bset>200){pulses++; lo=false;} if(!lo && x.bset<100) lo=true; }
     const c=mx(col(ss,'cur')), p=mx(col(ss,'pow'));
-    /* FOC en charge : l'angle croit avec le courant (elucide au run du
-       2026-07-24 : 0-3 a vide, 10 a 15,7 A). On le releve au pic. */
+    /* FOC en charge : l'angle croit avec le courant (elucide 2026-07-24). */
     const hiC=ss.filter(x=>x.cur>40);
     if(hiC.length) proto.focLoad=mean(col(hiC,'foc'));
     const rc = refNote(c, REF.b4cur, 10, r=>A(r)+' A');
-    const rp = refNote(p, REF.b4pow, null);
-    let det='Pbatt max '+p+' W'+rp.txt+', courant max '+A(c)+' A'+rc.txt;
+    let det=pulses+' relance(s), courant crête '+A(c)+' A'+rc.txt+', Pbatt max '+p+' W'+refNote(p, REF.b4pow, null).txt;
     if(c>150) return vKO(det+' — courant au-dessus du plafond');
-    if(c<80) return vATT(det+' — la régulation n’a pas été approchée (vitesse roue trop faible ? braquet ?)');
+    if(c<110) return vATT(det+' — la régulation (23 A) n’a pas été atteinte malgré les démarrages');
     if(rc.out) return vATT(det+' — écart au cap de référence');
-    return vOK(det+(c>=130?' — régulation au cap, comportement attendu':'')); }},
+    return vOK(det+' — régulation au cap sur les relances'); }},
 
  /* Plus de rearmement intermediaire : le budget de marche du display est
     passe de 120 a 300 s en 2.18.6 — la phase B tient d'un seul trait
     (~180 s de rotation). Avec un display < 2.18.6, le mode coupera a 120 s
     en pleine endurance : flasher d'abord. */
- {id:'B5',title:'Endurance',duty:55,ramp:20,settle:5,dur:75,res:100,
-  instr:"Palier long sous charge. On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
+ /* 65 % vise ~500-600 W soutenus (demande atelier) : entre le palier 60 %
+    (~470-490 W mesures) et le regime permanent 85 % (~860-920 W). */
+ {id:'B5',title:'Endurance',duty:65,ramp:20,settle:5,dur:75,res:100,
+  instr:"Palier long sous charge (~500-600 W attendus). On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const h=Math.floor(ss.length/2);
     const c1=mean(col(ss.slice(0,h),'cur')), c2=mean(col(ss.slice(h),'cur'));
@@ -1059,39 +1084,21 @@ function startProto(phase){
   /* Les deux phases pilotent le moteur par le MODE BANC : il doit donc etre
      ARME — et l'armement exige une confirmation PHYSIQUE sur le display, que
      rien ici ne peut contourner. */
-  if(!bench){
-    alert('Armez d’abord le mode banc.\n\n'
-      +'1. Panneau « Mode banc » → contexte '+(phase==='A'?'« à vide »':'« en charge »')+'\n'
-      +'2. Bouton « Armer »\n'
-      +'3. Sur le display : M puis ▲\n\n'
-      +'Le protocole pilote ensuite la consigne de duty tout seul.\n\nTest non démarré.');
-    return;
-  }
-  /* Le protocole doit savoir le mode REELLEMENT engage, sinon il piloterait
-     dans le vide. Cette information vient de la trame 0x06.
-     Le message distingue les deux causes possibles — sans quoi on ne sait pas
-     laquelle traiter — et laisse une porte de sortie : un defaut de MA
-     telemetrie ne doit pas bloquer une seance de banc. Les vrais garde-fous
-     (armement physique, dead-man, plafond de duty, arret au frein) sont dans le
-     display et ne dependent pas de cette trame. */
-  if(!bench.engagedSeen){
-    const rate = benchAckTimes.length/5;
-    if(rate < 0.4){
-      if(!confirm('Le display ne rapporte AUCUN état de mode banc (0 trame/s).\n\n'
-        +'Deux causes possibles :\n'
-        +'• l’armement n’est pas allé au bout — sur le display, appuyez M puis ▲ '
-        +'(deux appuis distincts) ; l’écran doit afficher ARME ;\n'
-        +'• le firmware display est antérieur à la 2.18.3 — la trame 0x06 n’existe pas.\n\n'
-        +'Si l’écran affiche bien ARME, vous pouvez lancer quand même : les sécurités '
-        +'(dead-man, plafond de duty, arrêt au frein) sont dans le display et restent actives.\n\n'
-        +'Lancer quand même ?')) return;
-      bench.engagedSeen = true;        // forçage assumé par l'operateur
-    } else {
-      alert('Le display émet bien '+rate.toFixed(1)+' trame(s)/s mais n’a jamais '
-        +'rapporté l’état « armé ».\n\n'
-        +'Sur le display : M puis ▲. L’écran doit afficher ARME.\n\nTest non démarré.');
+  if(!bench || !bench.engagedSeen){
+    /* ARMEMENT AUTOMATIQUE (demande atelier 2026-07-28) : plus besoin de
+       passer par le panneau — le clic sur la phase envoie la demande, il ne
+       reste que la confirmation PHYSIQUE (M puis ▲, garde-fou intouchable),
+       et la phase demarre seule des que le display rapporte l'armement. */
+    const cur0 = hist.length ? hist[hist.length-1].err : 0;
+    if(cur0 && !aweOn){
+      alert('Le moteur signale déjà : '+errTxt(cur0)+'\n\n'
+        +'Coupez l’alimentation (OFF/ON au display suffit : il tient le latch), puis relancez.\n\nTest non démarré.');
       return;
     }
+    if(!bench) benchArmRequest(phase==='A'?0:1);
+    pendingProto = {phase, until: Date.now()+90000};
+    benchUi('confirmez sur le display : M puis ▲ — la phase '+phase+' démarrera toute seule');
+    return;
   }
   if(phase==='A' && bench.loaded && !confirm(
       'Le mode banc est armé en contexte « en charge » (plafond 90 %).\n\n'
@@ -1271,6 +1278,12 @@ function endProto(aborted){
   const ko=p.results.filter(r=>r.v==='KO').length, att=p.results.filter(r=>r.v==='ATT').length;
   $('pDoneTitle').textContent=(aborted?'⚠ Test interrompu'+(p.abortMsg?' ('+p.abortMsg+')':'')+' — ':'')
     +'Phase '+p.phase+' : '+(ko?ko+' échec(s)':att?att+' point(s) d’attention':'tout est OK');
+  /* L'exclusion E08 du patch moteur P10 ne vaut QU'EN MODE BANC. Des la fin
+     du protocole le moteur repasse en mode normal : chaine deposee, toute
+     rotation assistee y fait tomber E08 en 12,5 s — constate le 2026-07-28
+     (err08 apres la phase A, OFF/ON necessaire). */
+  if(p.phase==='A')
+    $('pDoneTitle').textContent += '  ·  ⚠ chaîne déposée : ne faites PAS tourner l’assistance en mode normal (E08 en 12,5 s). Pour enchaîner un run, cliquez directement la phase suivante.';
   /* Synthese capteurs : l'etat de CHAQUE capteur en une ligne, releve pendant
      le run. « non testé » dit honnetement ou passer ensuite (ex : couple en
      charge -> phase B). */

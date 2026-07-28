@@ -44,7 +44,8 @@ const sandbox = {
   addEventListener: () => {},
   setInterval: (fn, period) => { const id=nextId++; timers.push({fn,period,next:NOW+period,id}); return id; },
   clearInterval: id => { const i=timers.findIndex(t=>t.id===id); if(i>=0) timers.splice(i,1); },
-  setTimeout: (fn) => nextId++,
+  // one-shot reel : le lancement differe de l'auto-armement en depend
+  setTimeout: (fn, ms) => { const id=nextId++; timers.push({fn, period:1e15, next:NOW+(ms||0)+1, id}); return id; },
   Date: class extends Date { constructor(...a){ if(!a.length) super(NOW); else super(...a); }
                              static now(){ return NOW; } },
   Uint8Array, DataView, Math, JSON, Set, Map, Promise, isNaN, parseInt, parseFloat,
@@ -145,15 +146,14 @@ async function advance(ms){
 // ---- scenario ----------------------------------------------------------
 const T0 = NOW;
 (async () => {
-console.log('=== 1. armement ===');
-ctx('benchArm()');
+console.log('=== 1+2. clic Phase A -> armement automatique -> confirmation -> run ===');
+await advance(400);                  // un peu de telemetrie d'abord (garde « connectez »)
+ctx("startProto('A')");             // PAS arme : la demande doit partir seule
 await advance(600);
-armPhysically();                       // l'operateur confirme sur le display
-await advance(1000);
-console.log('bench.engagedSeen =', ctx('bench && bench.engagedSeen'));
-
-console.log('\n=== 2. phase A complete ===');
-ctx("startProto('A')");
+console.log('demande d armement partie seule :', ctx('!!bench'));
+armPhysically();                     // l'operateur confirme sur le display
+await advance(1500);
+console.log('phase lancee automatiquement :', !!ctx('proto'));
 if(OUT.alerts.length) console.log('ALERTES :', OUT.alerts);
 let guard = 0;
 while(ctx('proto') && guard++ < 400){
