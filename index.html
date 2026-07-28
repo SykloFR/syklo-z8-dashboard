@@ -1112,6 +1112,12 @@ const PROTO_B=[
     proto.b4lat = pulses.filter(x=>x.lat!=null).map(x=>x.lat);
     if(pulses.length>1 && pulses[0].c<110 && c>=110)
       det+=' — 1re relance plus faible : tassement du montage (serrage au couple recommandé)';
+    /* Les WATTS suivent la tension du pack : a courant cap egal, une batterie
+       a 46,6 V donne ~6 % de moins qu'a 48,2 V (constate le 2026-07-28 —
+       « B4 faible » qui n'etait que la decharge de la batterie au fil des
+       sessions). La metrique robuste est le COURANT. */
+    if(proto.baseVolt && proto.baseVolt<475)
+      det+=' — batterie à '+(proto.baseVolt/10).toFixed(1)+' V : comparer le COURANT, les watts suivent la tension';
     if(c>155) det+=' — dépassement transitoire de la régulation ('+A(c)+' A), toléré : E07 veille à 30,9 A';
     if(c>180) return vKO(det+' — dépassement trop proche du seuil E07');
     if(c<110) return vATT(det+' — la régulation (23 A) n’a pas été atteinte sur les relances');
