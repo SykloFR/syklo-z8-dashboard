@@ -27,6 +27,7 @@ function el(id){
 el('benchLoad').value = '0';
 el('benchRamp').value = '20';
 el('benchDuty').value = '0';
+el('trMode').value = 'res';   // le stub DOM renvoie '0' par defaut, le select reel 'res'
 
 const sandbox = {
   console,

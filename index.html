@@ -793,7 +793,7 @@ const TR_CFG={ res:  {min:0,   max:100,  step:1,   def:20,  unit:' %'},
                grade:{min:-5,  max:15,   step:0.5, def:2,   unit:' %'},
                erg:  {min:0,   max:1000, step:10,  def:150, unit:' W'} };
 function trUi(){
-  const m=TR_CFG[$('trMode').value];
+  const m=TR_CFG[$('trMode').value] || TR_CFG.res;
   const sl=$('trVal');
   sl.min=m.min; sl.max=m.max; sl.step=m.step;
   if(+sl.value<m.min||+sl.value>m.max) sl.value=m.def;
@@ -817,7 +817,7 @@ async function trApply(){
     : 'échec d’écriture FTMS (commande refusée par le trainer ?)';
 }
 $('trMode').onchange=trUi;
-$('trVal').oninput=()=>{ $('trValTxt').textContent=$('trVal').value+TR_CFG[$('trMode').value].unit; };
+$('trVal').oninput=()=>{ $('trValTxt').textContent=$('trVal').value+(TR_CFG[$('trMode').value]||TR_CFG.res).unit; };
 $('trVal').onchange=trApply;                 // relacher le curseur = appliquer
 $('btnTrApply').onclick=trApply;
 $('btnTrRelease').onclick=async()=>{ if(!ftmsCtrl||proto) return;
