@@ -220,6 +220,28 @@
   </div>
 </div>
 
+<h2>Home trainer — pilotage manuel</h2>
+<div class="bench" style="border-color:#2a3340">
+  <div class="hint" style="margin-bottom:8px">
+    Indépendant du moteur et du mode banc : utilisable avec un <b>firmware
+    stock</b>, en pédalant normalement. Connectez le home trainer (bouton en
+    haut) — le contrôle FTMS est pris automatiquement.
+  </div>
+  <div class="bench-row">
+    <label>Mode</label>
+    <select id="trMode">
+      <option value="res">Résistance directe (%)</option>
+      <option value="grade">Pente simulée (%)</option>
+      <option value="erg">Puissance cible ERG (W)</option>
+    </select>
+    <input type="range" id="trVal" min="0" max="100" value="20" step="1" style="flex:1;min-width:200px">
+    <b id="trValTxt" style="font-size:20px;font-variant-numeric:tabular-nums;min-width:80px">20 %</b>
+    <button id="btnTrApply">Appliquer</button>
+    <button id="btnTrRelease" class="sec">Relâcher</button>
+  </div>
+  <div id="trDiag" style="color:var(--dim);font-size:12px"></div>
+</div>
+
 <h2>Paramètres moteur / batterie (paquet 0x05, refresh 2 s)</h2>
 <div class="cfg" id="cfgPanel">
   <div class="row"><span class="k">Preset moteur</span><span class="val" id="cMotor">–</span></div>
@@ -741,6 +763,67 @@ async function trainerResistancePct(pct){
   val=Math.max(0,Math.min(255,val));
   try{ await ftmsCtrl.writeValue(Uint8Array.of(0x04,val)); return true; }catch(_){ return false; }
 }
+
+/* PENTE SIMULEE — FTMS 0x11 (Indoor Bike Simulation Parameters) :
+   [vent sint16 0.001 m/s, PENTE sint16 0.01 %, Crr uint8 0.0001, Cw uint8
+   0.01 kg/m]. Crr 0.004 et Cw 0.51 = valeurs velo route standard. Le trainer
+   calcule lui-meme la resistance selon la vitesse et le poids configure dans
+   son app constructeur. */
+async function trainerGradePct(grade){
+  if(!ftmsCtrl) return false;
+  const g=Math.round(grade*100);
+  const f=new Uint8Array(7); const dv=new DataView(f.buffer);
+  dv.setUint8(0,0x11); dv.setInt16(1,0,true); dv.setInt16(3,g,true);
+  dv.setUint8(5,40); dv.setUint8(6,51);
+  try{ await ftmsCtrl.writeValue(f); return true; }catch(_){ return false; }
+}
+
+/* PUISSANCE CIBLE (ERG) — FTMS 0x05 : le trainer asservit la resistance pour
+   tenir les watts quelle que soit la vitesse. Attention en dessous de
+   ~10 km/h : la plupart des trainers ne peuvent plus tenir la cible. */
+async function trainerTargetPowerW(w){
+  if(!ftmsCtrl) return false;
+  const f=new Uint8Array(3); const dv=new DataView(f.buffer);
+  dv.setUint8(0,0x05); dv.setInt16(1,Math.round(w),true);
+  try{ await ftmsCtrl.writeValue(f); return true; }catch(_){ return false; }
+}
+
+/* ---- panneau de pilotage manuel (hors protocole guide) ---- */
+const TR_CFG={ res:  {min:0,   max:100,  step:1,   def:20,  unit:' %'},
+               grade:{min:-5,  max:15,   step:0.5, def:2,   unit:' %'},
+               erg:  {min:0,   max:1000, step:10,  def:150, unit:' W'} };
+function trUi(){
+  const m=TR_CFG[$('trMode').value];
+  const sl=$('trVal');
+  sl.min=m.min; sl.max=m.max; sl.step=m.step;
+  if(+sl.value<m.min||+sl.value>m.max) sl.value=m.def;
+  $('trValTxt').textContent=sl.value+m.unit;
+  const busy=!!proto;
+  $('btnTrApply').disabled = busy || !ftmsCtrl;
+  $('btnTrRelease').disabled = busy || !ftmsCtrl;
+  $('trDiag').textContent = busy ? 'protocole guidé en cours — il pilote la résistance lui-même'
+    : !ftmsCtrl ? 'connectez le home trainer (bouton en haut)'
+    : 'contrôle FTMS actif'+(ftmsResRange?' — plage résistance '+ftmsResRange.min+'…'+ftmsResRange.max:'');
+}
+async function trApply(){
+  if(proto || !ftmsCtrl) return;
+  const mode=$('trMode').value, v=+$('trVal').value;
+  const ok = mode==='res'   ? await trainerResistancePct(v)
+           : mode==='grade' ? await trainerGradePct(v)
+           :                  await trainerTargetPowerW(v);
+  $('trDiag').textContent = ok
+    ? 'appliqué : '+(mode==='res'?'résistance '+v+' %':mode==='grade'?'pente '+v+' %':'cible '+v+' W')
+      +' — '+new Date().toLocaleTimeString()
+    : 'échec d’écriture FTMS (commande refusée par le trainer ?)';
+}
+$('trMode').onchange=trUi;
+$('trVal').oninput=()=>{ $('trValTxt').textContent=$('trVal').value+TR_CFG[$('trMode').value].unit; };
+$('trVal').onchange=trApply;                 // relacher le curseur = appliquer
+$('btnTrApply').onclick=trApply;
+$('btnTrRelease').onclick=async()=>{ if(!ftmsCtrl||proto) return;
+  await trainerResistancePct(0); $('trDiag').textContent='résistance relâchée (0 %)'; };
+setInterval(trUi, 1000);
+trUi();
 
 /* ---------------------------------------------------------------------------
    PROTOCOLES PILOTES PAR DUTY (v2 — 2026-07-24)
