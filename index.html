@@ -132,7 +132,9 @@
       (l'absorption du trainer croît avec la vitesse : ~11 W/km/h) — capteur de
       couple en charge, capteur de vitesse, montée, couple, <b>démarrages en
       charge</b> (le pic de courant se tire sur l'inertie du volant — test de la
-      régulation 23 A), endurance, coupure. Un seul bloc (display 2.18.7).<br>
+      régulation 23 A), endurance ~700-800 W, coupure. Un seul bloc.
+      Le <b>street mode n'affecte pas le banc</b> (la trame banc porte sa propre
+      limite de vitesse, 99 km/h — vérifié par deux runs comparés le 2026-07-28).<br>
       L'enregistrement JSONL démarre et se télécharge automatiquement (champ
       <code>bset</code> = consigne envoyée).
     </div>
@@ -808,7 +810,9 @@ const A = c => (c*0.16).toFixed(1);
 const REF = {nA:4, nB:1,
   plateau:{25:55, 35:84, 45:115, 55:147, 70:187},   // ERPS a vide par cible
   takeoff:14, erpsMax85:270, erpsMax100:null, rise:1.62, coast:0.35, offset:186,
-  b1bDelta:160, b3cur:87, b4cur:143, b4pow:920, sag:0.71};
+  // b3cur : reference INVALIDEE le 2026-07-28 (B3 passe de 60 a 70 % de
+  // duty) — les prochains runs la re-etalonneront via make-reference.py.
+  b1bDelta:160, b3cur:null, b4cur:143, b4pow:920, sag:0.71};
 
 /* Note d'ecart a la reference. tolPct=null => information seule, jamais de
    verdict. fmt permet d'afficher la ref convertie (ex : ADC -> amperes). */
@@ -1035,7 +1039,7 @@ const PROTO_B=[
     if(!proto.speedSeen) return vATT(det);
     return vOK(det); }},
 
- {id:'B3',title:'Palier de couple',duty:60,ramp:20,settle:5,dur:25,res:100,
+ {id:'B3',title:'Palier de couple',duty:70,ramp:20,settle:5,dur:25,res:100,
   instr:"Palier soutenu — c’est l’étape qui fait vraiment travailler le moteur. Surveillez la température du carter à la main <b>après</b> le test.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const c=mx(col(ss,'cur')), sag=proto.baseVolt?(proto.baseVolt-mn(col(ss,'voltX10'))):null;
@@ -1096,26 +1100,33 @@ const PROTO_B=[
     /* FOC en charge : l'angle croit avec le courant (elucide 2026-07-24). */
     const hiC=ss.filter(x=>x.cur>40);
     if(hiC.length) proto.focLoad=mean(col(hiC,'foc'));
-    const rc = refNote(c, REF.b4cur, 10, r=>A(r)+' A');
+    const rc = refNote(c, REF.b4cur, null, r=>A(r)+' A');
+    /* Le test est UNILATERAL : ne pas atteindre le cap est un defaut ;
+       le DEPASSER en transitoire est le comportement normal d'une regulation
+       sur echelon (166 ADC = 26,6 A observe le 2026-07-28, sous le seuil
+       E07 de 193 = 30,9 A). L'ancien KO a 150 declarait un echec a tort. */
+    rc.out = REF.b4cur!=null && (c-REF.b4cur)/REF.b4cur < -0.10;
     let det=pulses.length+' relance(s) : '
         +pulses.map(x=>A(x.c)+' A'+(x.lat!=null?' en '+x.lat.toFixed(1)+' s':'')).join(' / ')+rc.txt
         +', Pbatt max '+p+' W'+refNote(p, REF.b4pow, null).txt;
     proto.b4lat = pulses.filter(x=>x.lat!=null).map(x=>x.lat);
     if(pulses.length>1 && pulses[0].c<110 && c>=110)
       det+=' — 1re relance plus faible : tassement du montage (serrage au couple recommandé)';
-    if(c>150) return vKO(det+' — courant au-dessus du plafond');
+    if(c>155) det+=' — dépassement transitoire de la régulation ('+A(c)+' A), toléré : E07 veille à 30,9 A';
+    if(c>180) return vKO(det+' — dépassement trop proche du seuil E07');
     if(c<110) return vATT(det+' — la régulation (23 A) n’a pas été atteinte sur les relances');
-    if(rc.out) return vATT(det+' — écart au cap de référence');
+    if(rc.out) return vATT(det+' — cap de référence non atteint');
     return vOK(det+' — régulation au cap'); }},
 
  /* Plus de rearmement intermediaire : le budget de marche du display est
     passe de 120 a 300 s en 2.18.6 — la phase B tient d'un seul trait
     (~180 s de rotation). Avec un display < 2.18.6, le mode coupera a 120 s
     en pleine endurance : flasher d'abord. */
- /* 65 % vise ~500-600 W soutenus (demande atelier) : entre le palier 60 %
-    (~470-490 W mesures) et le regime permanent 85 % (~860-920 W). */
- {id:'B5',title:'Endurance',duty:65,ramp:20,settle:5,dur:75,res:100,
-  instr:"Palier long sous charge (~500-600 W attendus). On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
+ /* 75 % vise ~700-800 W soutenus (demande atelier 2026-07-28, 2e passe :
+    65 % ne donnait que ~580-760 W). Le regime permanent reste borne par
+    l'absorption du trainer (~13 W/km/h) : monter le duty est le seul levier. */
+ {id:'B5',title:'Endurance',duty:75,ramp:20,settle:5,dur:75,res:100,
+  instr:"Palier long sous charge (~700-800 W attendus). On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const h=Math.floor(ss.length/2);
     const c1=mean(col(ss.slice(0,h),'cur')), c2=mean(col(ss.slice(h),'cur'));
