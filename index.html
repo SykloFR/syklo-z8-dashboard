@@ -798,6 +798,11 @@ function errGate(ss){
 }
 // Courant ADC -> amperes (0,16 A par pas, cf. baselines terrain)
 const A = c => (c*0.16).toFixed(1);
+/* Puissance NORMALISEE a 48 V : les watts bruts suivent la tension du pack
+   (-3 % de tension = -3 % de watts a courant egal — constate sur une journee
+   de banc, 48,2 -> 46,4 V). Le courant est la metrique du moteur ; Pnorm48
+   rend les puissances comparables entre runs et entre etats de charge. */
+const PN48 = adc => Math.round(adc*0.16*48);
 
 /* =========================================================================
    ETALON — moteur 48 V SAIN, genere par tools/make-reference.py.
@@ -812,7 +817,9 @@ const REF = {nA:4, nB:1,
   takeoff:14, erpsMax85:270, erpsMax100:null, rise:1.62, coast:0.35, offset:186,
   // b3cur : reference INVALIDEE le 2026-07-28 (B3 passe de 60 a 70 % de
   // duty) — les prochains runs la re-etalonneront via make-reference.py.
-  b1bDelta:160, b3cur:null, b4cur:143, b4pow:920, sag:0.71};
+  // b5cur : courant moyen d'endurance a 75 % — etalonne sur les runs de
+  // moteurs VALIDES au nouveau protocole (56-57 ADC, n=3 runs).
+  b1bDelta:160, b3cur:null, b4cur:143, b4pow:920, b5cur:56, sag:0.71};
 
 /* Note d'ecart a la reference. tolPct=null => information seule, jamais de
    verdict. fmt permet d'afficher la ref convertie (ex : ADC -> amperes). */
@@ -993,23 +1000,34 @@ const PROTO_B=[
     La chaine retenue par le trainer charge le plateau -> le capteur se deforme.
     (Chaine deposee c'est impossible : aucun couple sur un axe libre — A2 ne
     teste que la cadence.) */
- {id:'B1b',title:'Capteur de couple en charge (manuel)',dur:15,duty:0,manual:true,res:100,
+ {id:'B1b',title:'Capteur de couple en charge (manuel)',dur:20,duty:0,manual:true,res:100,
   /* L'appui STATIQUE ne charge rien : a l'arret le trainer ne resiste presque
      pas, la pedale tourne librement (delta fige a 28 au run du 2026-07-24 —
      meme physique que l'absorption ∝ vitesse). C'est l'ACCELERATION du volant
      d'inertie qui demande du couple : pedaler par a-coups francs. */
-  instr:"Moteur à l’arrêt : <b>pédalez par à-coups francs</b>, 3-4 accélérations bien appuyées (c’est le volant d’inertie du trainer qui fait la charge, pas l’appui statique).",
+  instr:"Moteur à l’arrêt, en deux temps : <b>2 grosses attaques DEBOUT</b> sur les pédales (amplitude), puis <b>4-5 tours de pédalage TRANQUILLE</b> assis (sensibilité à faible effort).",
+  /* DEUX MESURES (demande atelier 2026-07-28) :
+     - AMPLITUDE : delta max pendant les attaques debout ;
+     - SENSIBILITE : delta median du pedalage tranquille (echantillons en
+       cadence, hors pics) — un capteur qui ne voit pas les efforts legers
+       donne une assistance en tout-ou-rien sur route. Reference a poser. */
   check(ss){ const g=errGate(ss); if(g) return g;
     const dmax=mx(col(ss,'delta'));
     proto.torqueLoadDelta=dmax;
-    // capteur de CADENCE au passage (equivalent A2) : l'operateur pedale deja
     const cadOk=ss.filter(x=>x.cad>0).length/ss.length;
     if(cadOk>0) proto.cadPct=Math.max(proto.cadPct||0, Math.round(cadOk*100));
-    const cadTxt=cadOk>0?', cadence détectée ('+Math.round(cadOk*100)+' % du temps)':'';
-    if(dmax<40) return vKO('capteur de couple muet sous charge (delta max '+dmax+') — ou à-coups trop timides'+cadTxt);
-    if(cadOk===0) return vATT('delta max '+dmax+' mais capteur de cadence muet pendant les à-coups — à vérifier');
-    if(dmax<80) return vATT('réponse faible sous charge (delta max '+dmax+') — accélérer plus franchement, ou capteur à surveiller'+cadTxt);
-    return vOK('delta max '+dmax+refNote(dmax, REF.b1bDelta, null).txt+' sous charge — capteur de couple OK'+cadTxt); }},
+    // sensibilite : mediane du delta en pedalage (hors pics d'attaque)
+    const ped=ss.filter(x=>x.cad>0 && x.delta<dmax*0.4).map(x=>x.delta).sort((a,b)=>a-b);
+    const dLow=ped.length?ped[Math.floor(ped.length/2)]:null;
+    if(dLow!=null) proto.torqueLowDelta=dLow;
+    const sens=dLow!=null?', sensibilité faible effort : delta ~'+dLow:'';
+    const cadTxt=cadOk>0?', cadence OK':'';
+    if(dmax<40) return vKO('capteur de couple muet sous charge (delta max '+dmax+') — ou attaques trop timides'+cadTxt);
+    if(cadOk===0) return vATT('delta max '+dmax+' mais capteur de cadence muet — à vérifier');
+    if(dmax<80) return vATT('amplitude faible (delta max '+dmax+') — attaquer plus franchement, ou capteur à surveiller'+sens+cadTxt);
+    if(dLow!=null && dLow<8 && cadOk>0.2)
+      return vATT('amplitude OK (delta max '+dmax+') mais le capteur ne voit pas les efforts légers (delta ~'+dLow+' en pédalage tranquille) — risque d’assistance en tout-ou-rien'+cadTxt);
+    return vOK('amplitude : delta max '+dmax+refNote(dmax, REF.b1bDelta, null).txt+sens+cadTxt+' — capteur de couple OK'); }},
 
  {id:'B2',title:'Montée en charge',duty:45,ramp:8,settle:5,dur:15,res:100,
   instr:"Montée progressive à 45 % contre la résistance maximale. La chaîne se tend — restez à l’écart.",
@@ -1048,7 +1066,7 @@ const PROTO_B=[
     /* B3 = REGIME PERMANENT : le courant y est limite par l'absorption du
        trainer (~13 W/km/h), ce n'est PAS le maximum du moteur — le courant
        max se lit en B4 (relances sur inertie). Precision atelier 2026-07-28. */
-    let det='courant max '+A(c)+' A'+rn.txt+' (régime permanent — le courant MAX se lit en B4)';
+    let det='courant max '+A(c)+' A soit '+PN48(c)+' W@48V'+rn.txt+' (régime permanent — le courant MAX se lit en B4)';
     if(sag!=null) det+=', sag '+(sag/10).toFixed(1)+' V';
     // etats HALL + stabilite au palier (equivalent A5 partiel, sous charge)
     const halls=new Set(col(ss,'hall'));
@@ -1108,7 +1126,7 @@ const PROTO_B=[
     rc.out = REF.b4cur!=null && (c-REF.b4cur)/REF.b4cur < -0.10;
     let det=pulses.length+' relance(s) : '
         +pulses.map(x=>A(x.c)+' A'+(x.lat!=null?' en '+x.lat.toFixed(1)+' s':'')).join(' / ')+rc.txt
-        +', Pbatt max '+p+' W'+refNote(p, REF.b4pow, null).txt;
+        +', Pbatt max '+p+' W ('+PN48(c)+' W@48V au cap)'+refNote(p, REF.b4pow, null).txt;
     proto.b4lat = pulses.filter(x=>x.lat!=null).map(x=>x.lat);
     if(pulses.length>1 && pulses[0].c<110 && c>=110)
       det+=' — 1re relance plus faible : tassement du montage (serrage au couple recommandé)';
@@ -1128,20 +1146,23 @@ const PROTO_B=[
     passe de 120 a 300 s en 2.18.6 — la phase B tient d'un seul trait
     (~180 s de rotation). Avec un display < 2.18.6, le mode coupera a 120 s
     en pleine endurance : flasher d'abord. */
- /* 75 % vise ~700-800 W soutenus (demande atelier 2026-07-28, 2e passe :
-    65 % ne donnait que ~580-760 W). Le regime permanent reste borne par
-    l'absorption du trainer (~13 W/km/h) : monter le duty est le seul levier. */
+ /* Attendus etalonnes sur les runs de moteurs VALIDES au protocole 75 %
+    (2026-07-28) : courant soutenu ~56 ADC (9 A, ~430 W@48V), crete 105-130
+    ADC. EXPRIMES EN COURANT — les watts bruts suivent la tension du pack. */
  {id:'B5',title:'Endurance',duty:75,ramp:20,settle:5,dur:75,res:100,
-  instr:"Palier long sous charge (~700-800 W attendus). On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
+  instr:"Palier long sous charge — attendu ~9 A soutenus (~430 W@48V, réf. moteurs validés). On cherche une <b>dérive</b> : courant qui monte ou régime qui baisse à consigne constante.",
   check(ss){ const g=errGate(ss); if(g) return g;
     const h=Math.floor(ss.length/2);
     const c1=mean(col(ss.slice(0,h),'cur')), c2=mean(col(ss.slice(h),'cur'));
     const e1=mean(col(ss.slice(0,h),'erps')), e2=mean(col(ss.slice(h),'erps'));
     const dc=c1>5?(c2-c1)/c1:0, de=e1>5?(e2-e1)/e1:0;
-    const det='courant '+A(c1)+'→'+A(c2)+' A ('+(dc*100).toFixed(0)+'%), régime '
+    const cmoy=(c1+c2)/2;
+    const rn=refNote(cmoy, REF.b5cur, 25);
+    const det='courant '+A(c1)+'→'+A(c2)+' A'+rn.txt+' soit '+PN48(cmoy)+' W@48V soutenus, régime '
       +e1.toFixed(0)+'→'+e2.toFixed(0)+' ERPS ('+(de*100).toFixed(0)+'%)';
     if(dc>0.20) return vATT(det+' — le courant dérive, échauffement probable');
     if(de<-0.15) return vATT(det+' — le régime s’effondre à consigne constante');
+    if(rn.out) return vATT(det+' — courant soutenu hors référence des moteurs validés');
     return vOK(det+' — stable'); }},
 
  {id:'B6',title:'Coupure sous charge',duty:t=>(t<5?50:0),ramp:20,dur:12,res:100,
@@ -1376,7 +1397,8 @@ function endProto(aborted){
   const cap=[
     ['Couple', (p.torqueOffset!=null?'offset repos '+p.torqueOffset.toFixed(0):'repos : non testé')
       +(p.torqueLoadDelta!=null?' · delta en charge '+p.torqueLoadDelta
-        :(p.deltaFree!=null?' · delta à vide '+p.deltaFree+' (en charge : phase B)':''))],
+        :(p.deltaFree!=null?' · delta à vide '+p.deltaFree+' (en charge : phase B)':''))
+      +(p.torqueLowDelta!=null?' · faible effort ~'+p.torqueLowDelta:'')],
     ['Cadence', p.cadPct!=null?'détectée '+p.cadPct+' % du temps':'non testée'],
     ['Hall', p.hallCount!=null?p.hallCount+'/6 états vus en rotation':'non testé'],
     ['Décollage', (p.takeoff!=null?D2P(p.takeoff)+' % à vide':'')

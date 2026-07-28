@@ -89,9 +89,12 @@ function pushTelemetry(){
   const pct = disp.duty*100/254;
   const target = disp.state===2 ? Math.max(0,(pct-8)*3.2) : 0;
   erps += (target - erps) * 0.35;                          // 1er ordre
-  // courant : a vide 1-2 ADC (mesure reel), en charge ~0.58 ADC/ERPS cap 143
+  // courant : a vide 1-2 ADC (mesure reel). En charge, deux termes mesures au
+  // banc reel : regime permanent ~0.27 ADC/ERPS (B5 75 % -> 56 ADC) + terme
+  // d'ACCELERATION du volant (les relances B4 tirent le cap sur l'inertie).
   const cur = disp.state!==2 ? 2
-            : (LOADED ? Math.min(143, Math.max(0, erps*0.58)) : Math.min(4, 1+erps*0.01));
+            : (LOADED ? Math.min(143, erps*0.27 + Math.max(0,(target-erps))*2)
+                      : Math.min(4, 1+erps*0.01));
   const dv = new DataView(new ArrayBuffer(19));
   dv.setUint8(0,0x04); dv.setUint8(1,seq++ & 0xff);
   dv.setUint16(2,180,true); dv.setUint16(4,5,true);        // torque, delta
