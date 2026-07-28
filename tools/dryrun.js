@@ -89,7 +89,9 @@ function pushTelemetry(){
   const pct = disp.duty*100/254;
   const target = disp.state===2 ? Math.max(0,(pct-8)*3.2) : 0;
   erps += (target - erps) * 0.35;                          // 1er ordre
-  const cur = disp.state===2 ? Math.min(143, Math.max(0, erps*0.58)) : 2;
+  // courant : a vide 1-2 ADC (mesure reel), en charge ~0.58 ADC/ERPS cap 143
+  const cur = disp.state!==2 ? 2
+            : (LOADED ? Math.min(143, Math.max(0, erps*0.58)) : Math.min(4, 1+erps*0.01));
   const dv = new DataView(new ArrayBuffer(19));
   dv.setUint8(0,0x04); dv.setUint8(1,seq++ & 0xff);
   dv.setUint16(2,180,true); dv.setUint16(4,5,true);        // torque, delta
@@ -102,7 +104,7 @@ function pushTelemetry(){
   dv.setUint8(15,0); dv.setUint8(16,1+(seq%6)); dv.setUint16(17,0,true);
   ctx('onNotify')({target:{value:dv}});
 }
-let LOSS = 0, lossBurst = 0;
+let LOSS = 0, lossBurst = 0, LOADED = false;   // LOADED : chaine montee (phase B)
 function pushBenchState(){
   if(!disp.state && !disp.grace) return;
   if(lossBurst > 0){ lossBurst--; if(disp.state) disp.grace = 10; return; }
@@ -189,6 +191,7 @@ console.log('  resultat :', rA2.length>=12 ? 'AUCUNE interruption — la seance 
 LOSS = 0;
 
 console.log('\n=== 3. phase B (2 blocs) ===');
+LOADED = true;
 OUT.steps.length = 0; OUT.alerts.length = 0; advance.last = null;
 const TB = NOW;
 ctx('benchArm()'); await advance(600); armPhysically(); await advance(4000);
