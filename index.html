@@ -973,8 +973,16 @@ const PROTO_B=[
   instr:"Chaîne montée, <b>le plus GRAND braquet</b> (petit pignon — ne plus changer de vitesse ensuite). Résistance du trainer au <b>maximum</b>. Ne touchez pas aux pédales.<br>Pourquoi le grand braquet : l’absorption du trainer croît avec la vitesse de la roue (~11 W par km/h mesuré) — pour charger le moteur il faut de la vitesse.",
   check(ss){ const g=errGate(ss); if(g) return g;
     proto.baseVolt=mean(col(ss,'voltX10'));
-    if(mx(col(ss,'cur'))>6) return vATT('courant non nul à l’arrêt');
-    return vOK('repos OK, tension à vide '+(proto.baseVolt/10).toFixed(1)+' V'); }},
+    // offset couple au repos (equivalent A1) — chaine montee, la tension de
+    // chaine peut precharger legerement le capteur : tolerance elargie
+    const t=col(ss,'torque'), m=mean(t), sp=mx(t)-mn(t);
+    proto.torqueOffset=m;
+    let det='repos OK, offset couple '+m.toFixed(0)+refNote(m, REF.offset, null).txt
+        +', tension à vide '+(proto.baseVolt/10).toFixed(1)+' V';
+    if(mx(col(ss,'cur'))>6) return vATT(det+' — courant non nul à l’arrêt');
+    if(m<110||m>280) return vATT(det+' — offset hors famille (capteur ou précharge chaîne)');
+    if(sp>20) return vATT(det+' — offset instable (écart '+sp+')');
+    return vOK(det); }},
 
  /* Le SEUL montage ou le capteur de couple voit du couple : chaine montee,
     resistance au maximum, MOTEUR A L'ARRET, l'operateur appuie sur la pedale.
@@ -990,9 +998,14 @@ const PROTO_B=[
   check(ss){ const g=errGate(ss); if(g) return g;
     const dmax=mx(col(ss,'delta'));
     proto.torqueLoadDelta=dmax;
-    if(dmax<40) return vKO('capteur de couple muet sous charge (delta max '+dmax+') — ou à-coups trop timides');
-    if(dmax<80) return vATT('réponse faible sous charge (delta max '+dmax+') — accélérer plus franchement, ou capteur à surveiller');
-    return vOK('delta max '+dmax+refNote(dmax, REF.b1bDelta, null).txt+' sous charge — le capteur de couple répond'); }},
+    // capteur de CADENCE au passage (equivalent A2) : l'operateur pedale deja
+    const cadOk=ss.filter(x=>x.cad>0).length/ss.length;
+    if(cadOk>0) proto.cadPct=Math.max(proto.cadPct||0, Math.round(cadOk*100));
+    const cadTxt=cadOk>0?', cadence détectée ('+Math.round(cadOk*100)+' % du temps)':'';
+    if(dmax<40) return vKO('capteur de couple muet sous charge (delta max '+dmax+') — ou à-coups trop timides'+cadTxt);
+    if(cadOk===0) return vATT('delta max '+dmax+' mais capteur de cadence muet pendant les à-coups — à vérifier');
+    if(dmax<80) return vATT('réponse faible sous charge (delta max '+dmax+') — accélérer plus franchement, ou capteur à surveiller'+cadTxt);
+    return vOK('delta max '+dmax+refNote(dmax, REF.b1bDelta, null).txt+' sous charge — capteur de couple OK'+cadTxt); }},
 
  {id:'B2',title:'Montée en charge',duty:45,ramp:8,settle:5,dur:15,res:100,
   instr:"Montée progressive à 45 % contre la résistance maximale. La chaîne se tend — restez à l’écart.",
@@ -1005,6 +1018,11 @@ const PROTO_B=[
        (l'operateur peut le reconnecter en phase B). Roue entrainee par la
        chaine + rotor > 30 ERPS -> la vitesse doit etre non nulle. Absent ->
        ATT, pas KO : sur un trainer l'aimant est souvent depose. */
+    // decollage EN CHARGE (equivalent A3 — reference distincte du a-vide) :
+    // premiere consigne qui met le rotor en rotation contre la transmission
+    let take=null;
+    for(const x of ss) if(take==null && x.erps>5 && x.bset) take=x.bset;
+    if(take!=null){ proto.takeoffLoaded=D2P(take); det+=', décollage en charge à '+proto.takeoffLoaded+' %'; }
     const sp=ss.filter(x=>x.erps>30);
     const seen=sp.length ? sp.filter(x=>x.spdX10>0).length/sp.length : 0;
     proto.speedSeen = seen>0.5;
@@ -1028,6 +1046,14 @@ const PROTO_B=[
        max se lit en B4 (relances sur inertie). Precision atelier 2026-07-28. */
     let det='courant max '+A(c)+' A'+rn.txt+' (régime permanent — le courant MAX se lit en B4)';
     if(sag!=null) det+=', sag '+(sag/10).toFixed(1)+' V';
+    // etats HALL + stabilite au palier (equivalent A5 partiel, sous charge)
+    const halls=new Set(col(ss,'hall'));
+    proto.hallCount=Math.max(proto.hallCount||0, halls.size);
+    const es=col(ss,'erps').filter(e=>e>50);
+    const jit=es.length>5 ? sdev(es)/mean(es) : 0;
+    det+=', '+halls.size+'/6 Hall';
+    if(halls.size<6) return vATT(det+' — états Hall incomplets à ce régime : capteur ou commutation à vérifier');
+    if(jit>0.10) return vATT(det+' — régime instable (±'+(jit*100).toFixed(0)+' %) à consigne constante');
     if(c>150) return vKO(det+' — au-dessus du plafond attendu');
     if(sag!=null&&sag>60) return vATT(det+' — sag batterie élevé');
     if(c<60) return vATT(det+' — moteur peu chargé, résistance insuffisante');
@@ -1053,12 +1079,17 @@ const PROTO_B=[
        premiere prise de couple (constate au banc le 2026-07-28) : sa
        faiblesse eventuelle est une note, pas un warning. Le verdict porte
        sur les relances suivantes. */
-    const pulses=[]; let inp=false, cm=0, pm=0;
+    const pulses=[]; let inp=false, cm=0, pm=0, t0=0, tHit=null;
     for(const x of ss){
-      if(x.bset>200){ inp=true; cm=Math.max(cm,x.cur); pm=Math.max(pm,x.pow||0); }
-      else if(inp){ pulses.push({c:cm,p:pm}); inp=false; cm=0; pm=0; }
+      if(x.bset>200){
+        if(!inp){ inp=true; t0=x.t; tHit=null; cm=0; pm=0; }
+        cm=Math.max(cm,x.cur); pm=Math.max(pm,x.pow||0);
+        // latence : temps pour atteindre 90 % du cap (equivalent A7, en charge)
+        if(tHit==null && x.cur>=129) tHit=(x.t-t0)/1000;
+      }
+      else if(inp){ pulses.push({c:cm,p:pm,lat:tHit}); inp=false; }
     }
-    if(inp) pulses.push({c:cm,p:pm});
+    if(inp) pulses.push({c:cm,p:pm,lat:tHit});
     if(!pulses.length) return vKO('aucune relance appliquée');
     const judged = pulses.length>1 ? pulses.slice(1) : pulses;
     const c = mx(judged.map(x=>x.c)), p = mx(pulses.map(x=>x.p));
@@ -1066,8 +1097,10 @@ const PROTO_B=[
     const hiC=ss.filter(x=>x.cur>40);
     if(hiC.length) proto.focLoad=mean(col(hiC,'foc'));
     const rc = refNote(c, REF.b4cur, 10, r=>A(r)+' A');
-    let det=pulses.length+' relance(s) : '+pulses.map(x=>A(x.c)).join(' / ')+' A'+rc.txt
+    let det=pulses.length+' relance(s) : '
+        +pulses.map(x=>A(x.c)+' A'+(x.lat!=null?' en '+x.lat.toFixed(1)+' s':'')).join(' / ')+rc.txt
         +', Pbatt max '+p+' W'+refNote(p, REF.b4pow, null).txt;
+    proto.b4lat = pulses.filter(x=>x.lat!=null).map(x=>x.lat);
     if(pulses.length>1 && pulses[0].c<110 && c>=110)
       det+=' — 1re relance plus faible : tassement du montage (serrage au couple recommandé)';
     if(c>150) return vKO(det+' — courant au-dessus du plafond');
@@ -1097,14 +1130,19 @@ const PROTO_B=[
  {id:'B6',title:'Coupure sous charge',duty:t=>(t<5?50:0),ramp:20,dur:12,res:100,
   instr:"Coupure nette sous charge. Le duty doit retomber immédiatement — c’est le comportement mis en cause par l’over-run constaté sur route.",
   check(ss){ const g=errGate(ss); if(g) return g;
-    let cutAt=null, zeroAt=null;
+    let cutAt=null, zeroAt=null, stopAt=null;
     for(const x of ss){ if(cutAt==null && x.bset===0) cutAt=x.t;
-      if(cutAt!=null && zeroAt==null && x.duty<10) zeroAt=x.t; }
+      if(cutAt!=null && zeroAt==null && x.duty<10) zeroAt=x.t;
+      if(cutAt!=null && stopAt==null && x.erps<5) stopAt=x.t; }
     if(cutAt==null) return vKO('coupure non appliquée');
     if(zeroAt==null) return vKO('le duty moteur n’est jamais retombé après la coupure de consigne (over-run)');
     const dt=(zeroAt-cutAt)/1000;
-    if(dt>1.0) return vATT('duty retombé en '+dt.toFixed(2)+' s — lent');
-    return vOK('duty retombé en '+dt.toFixed(2)+' s après coupure de la consigne'); }},
+    // roue libre TRANSMISSION (equivalent A8, en charge) : rotor + chaine +
+    // trainer — metrique de reference, une derive signale un frottement
+    let coast='';
+    if(stopAt!=null){ proto.coastLoaded=(stopAt-cutAt)/1000; coast=' ; transmission arrêtée en '+proto.coastLoaded.toFixed(1)+' s'; }
+    if(dt>1.0) return vATT('duty retombé en '+dt.toFixed(2)+' s — lent'+coast);
+    return vOK('duty retombé en '+dt.toFixed(2)+' s après coupure'+coast); }},
 ];
 
 function fmtT(sec){ sec=Math.max(0,Math.ceil(sec)); return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'); }
@@ -1322,8 +1360,12 @@ function endProto(aborted){
     ['Couple', (p.torqueOffset!=null?'offset repos '+p.torqueOffset.toFixed(0):'repos : non testé')
       +(p.torqueLoadDelta!=null?' · delta en charge '+p.torqueLoadDelta
         :(p.deltaFree!=null?' · delta à vide '+p.deltaFree+' (en charge : phase B)':''))],
-    ['Cadence', p.cadPct!=null?'détectée '+p.cadPct+' % du temps (A2)':'non testée (phase A)'],
-    ['Hall', p.hallCount!=null?p.hallCount+'/6 états vus à haut régime':'non testé (phase A)'],
+    ['Cadence', p.cadPct!=null?'détectée '+p.cadPct+' % du temps':'non testée'],
+    ['Hall', p.hallCount!=null?p.hallCount+'/6 états vus en rotation':'non testé'],
+    ['Décollage', (p.takeoff!=null?D2P(p.takeoff)+' % à vide':'')
+      +(p.takeoff!=null&&p.takeoffLoaded!=null?' · ':'')
+      +(p.takeoffLoaded!=null?p.takeoffLoaded+' % en charge':'')
+      || 'non mesuré'],
     ['Vitesse roue', p.speedSeen==null?'non testée (phase B, aimant requis)'
       :p.speedSeen?'OK'+(p.speedRatio!=null?' — '+(p.speedRatio*100).toFixed(1)+' km/h à 100 ERPS':'')
       :'MUETTE (aimant en place ?)'],

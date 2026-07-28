@@ -203,7 +203,7 @@ while(ctx('proto') && guard++ < 400){
   const p = ctx('proto');
   // l'operateur appuie sur la pedale pendant B1b (couple en charge)
   if(p && p.curId==='B1b'){
-    const ss=p.samples; if(ss.length) ss[ss.length-1].delta = 240;
+    const ss=p.samples; if(ss.length){ ss[ss.length-1].delta = 240; ss[ss.length-1].cad = 35; }
   }
   // l'operateur rearme physiquement quand le protocole le demande
   if(p && p.state==='waiting' && guard%6===0)
