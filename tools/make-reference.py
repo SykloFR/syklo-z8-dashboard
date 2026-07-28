@@ -139,7 +139,9 @@ def main(folder):
         plateau[t] = round(st.mean([m['plateau'][t] for m in A if t in m.get('plateau', {})]))
     ref = {
         'nA': len(A), 'nB': len(B), 'plateau': plateau,
-        'takeoff': agg(A, 'takeoff'), 'erpsMax85': agg([m for m in A if (m.get('a5duty') or 0) >= 75], 'erpsMax'),
+        'takeoff': agg(A, 'takeoff'),
+        'erpsMax85': agg([m for m in A if 75 <= (m.get('a5duty') or 0) <= 92], 'erpsMax'),
+        'erpsMax100': agg([m for m in A if (m.get('a5duty') or 0) > 92], 'erpsMax'),
         'rise': agg(A, 'rise'), 'coast': agg(A, 'coast'), 'offset': agg(A, 'offset'),
         'b1bDelta': agg(B, 'b1bDelta'), 'b3cur': agg(B, 'b3cur'),
         'b4cur': agg(B, 'b4cur'), 'b4pow': agg(B, 'b4pow'), 'sag': agg(B, 'sag'),

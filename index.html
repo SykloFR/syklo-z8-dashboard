@@ -176,7 +176,7 @@
   <div class="bench-row">
     <label>Contexte</label>
     <select id="benchLoad">
-      <option value="0">à vide — plafond 90 %</option>
+      <option value="0">à vide — plafond 100 %</option>
       <option value="1">en charge (trainer) — plafond 90 %</option>
     </select>
     <button id="btnBenchArm">1 · Armer</button>
@@ -807,7 +807,7 @@ const A = c => (c*0.16).toFixed(1);
    ========================================================================= */
 const REF = {nA:4, nB:1,
   plateau:{25:55, 35:84, 45:115, 55:147, 70:187},   // ERPS a vide par cible
-  takeoff:14, erpsMax85:270, rise:1.62, coast:0.35, offset:186,
+  takeoff:14, erpsMax85:270, erpsMax100:null, rise:1.62, coast:0.35, offset:186,
   b1bDelta:160, b3cur:87, b4cur:143, b4pow:920, sag:0.71};
 
 /* Note d'ecart a la reference. tolPct=null => information seule, jamais de
@@ -873,12 +873,22 @@ const PROTO_A=[
     if(!mono) return vKO('régime non croissant avec le duty : '+det);
     return vOK(det+' — série croissante et régulière'); }},
 
- {id:'A5',title:'Haut régime',duty:85,ramp:20,settle:3,dur:8,
-  instr:"Haut régime (85 % — display 2.18.7, un display plus ancien plafonnera à 60 %). C’est ici qu’un défaut de capteur Hall ou de commutation se voit.",
+ /* CE QU'ON CHERCHE au regime maximal (question atelier 2026-07-28) — c'est
+    le point de fonctionnement revelateur a vide, tout s'y voit en premier :
+    1. les 6 etats HALL qui defilent proprement — un capteur mort ou faible se
+       manifeste a haute vitesse (rates de commutation) bien avant de bloquer ;
+    2. le REGIME ATTEINT vs reference — un moteur qui ne monte pas : frottements,
+       aimants affaiblis, batterie basse, Hall decale ;
+    3. la STABILITE du regime (jitter) — instable = commutation ou roulement ;
+    4. le COURANT A VIDE — eleve = frottements internes (roulements, reducteur).
+    100 % = vrai maximum (display 2.18.8 ; un 2.18.7 plafonne a 90 %). */
+ {id:'A5',title:'Régime maximal',duty:100,ramp:20,settle:3,dur:8,
+  instr:"Plein duty (100 % — display 2.18.8, sinon plafonné). On vérifie 4 choses : régime atteint vs référence · 6 états Hall · stabilité · courant à vide (frottements).",
   check(ss){ const g=errGate(ss); if(g) return g;
     const e=mx(col(ss,'erps')), c=mx(col(ss,'cur'));
     const halls=new Set(col(ss,'hall')); const es=col(ss,'erps');
     proto.erpsMax=e; proto.hallCount=halls.size;
+    if(c>12) return vATT('courant à vide élevé ('+A(c)+' A) à '+e+' ERPS — frottements internes (roulements, réducteur) à vérifier');
     /* Angle FOC : jamais elucide (remonte ~0 depuis le debut du chantier).
        On ne le juge pas, on le RELEVE a haut regime — c'est la que sa valeur
        devrait etre la plus significative. */
@@ -888,7 +898,11 @@ const PROTO_A=[
     if(jitter>0.08) return vATT('régime instable à plein duty (±'+(jitter*100).toFixed(0)+'%) — ERPS max '+e);
     // la comparaison n'a de sens que si le display a laisse monter a ~85 %
     // (un display < 2.18.7 plafonne a 60 % -> regime forcement plus bas)
-    const rn = mx(col(ss,'duty'))>=75 ? refNote(e, REF.erpsMax85, 12) : {txt:'',out:false};
+    /* comparaison a la reference DU MEME palier : 85 % (2.18.7) ou 100 %
+       (2.18.8, reference a poser — les premiers runs l'etalonneront) */
+    const du = mx(col(ss,'duty'));
+    const rn = (du>=75 && du<=92) ? refNote(e, REF.erpsMax85, 12)
+             : (du>92 && REF.erpsMax100) ? refNote(e, REF.erpsMax100, 12) : {txt:'',out:false};
     if(rn.out) return vATT('ERPS max '+e+rn.txt+' — régime hors référence : Hall, frottements ou tension batterie');
     return vOK('ERPS max '+e+rn.txt+', 6 états Hall, régime stable, courant max '+A(c)+' A, FOC moy '+proto.focHigh.toFixed(1)); }},
 
@@ -1350,7 +1364,7 @@ $('btnProtoCopy').onclick=async()=>{
      · plafond de duty 60 % à vide / 90 % en charge, appliqué par le display.
    Plus : timeout 300 s de marche (2.18.6), frein et ON/OFF = arrêt immédiat.
 --------------------------------------------------------------------------- */
-const BENCH_MAX = {0:229, 1:229};          // plafonds display 2.18.7, en duty 0..254 (le display reste seul juge)
+const BENCH_MAX = {0:254, 1:229};          // plafonds display 2.18.8, en duty 0..254 (le display reste seul juge)
 const D2P = d => Math.round(d*100/254);    // duty -> %
 const P2D = p => Math.round(p*254/100);    // % -> duty
 const BENCH_TICK = 500;                    // période keep-alive (dead-man = 2000 ms)
