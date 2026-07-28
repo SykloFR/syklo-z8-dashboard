@@ -782,8 +782,31 @@ function errGate(ss){
     ? w+' — E08 en mode banc = le moteur n’est pas en 1.0.2 (patch P10)'
     : w);
 }
-// Courant ADC -> ampères (0,16 A par pas, cf. baselines terrain)
+// Courant ADC -> amperes (0,16 A par pas, cf. baselines terrain)
 const A = c => (c*0.16).toFixed(1);
+
+/* =========================================================================
+   ETALON — moteur 48 V SAIN, genere par tools/make-reference.py.
+   Provenance : 4 runs phase A (CV paliers 4-6 %) + 1 run phase B, campagne
+   des 2026-07-24 / 2026-07-28. A REGENERER apres chaque salve de runs de
+   reference (le script ecarte seul les runs au profil obsolete) puis
+   reporter ici. Les tolerances sont volontairement larges tant que nB = 1 ;
+   les resserrer quand la repetabilite de B sera mesuree.
+   ========================================================================= */
+const REF = {nA:4, nB:1,
+  plateau:{25:55, 35:84, 45:115, 55:147, 70:187},   // ERPS a vide par cible
+  takeoff:14, erpsMax85:270, rise:1.62, coast:0.35, offset:186,
+  b1bDelta:160, b3cur:87, b4cur:143, b4pow:920, sag:0.71};
+
+/* Note d'ecart a la reference. tolPct=null => information seule, jamais de
+   verdict. fmt permet d'afficher la ref convertie (ex : ADC -> amperes). */
+function refNote(val, ref, tolPct, fmt){
+  if(ref==null || val==null || !isFinite(val)) return {txt:'', out:false};
+  const dev=(val-ref)/ref*100;
+  const shown = fmt ? fmt(ref) : (ref<10 ? (+ref).toFixed(2) : Math.round(ref));
+  return {txt:' · réf '+shown+' ('+(dev>=0?'+':'')+dev.toFixed(0)+' %)',
+          out: tolPct!=null && Math.abs(dev)>tolPct};
+}
 
 const PROTO_A=[
  {id:'A1',title:'Capteurs au repos',dur:12,duty:0,
@@ -794,7 +817,7 @@ const PROTO_A=[
     if(m<120||m>250) return vKO('offset couple '+m.toFixed(0)+' hors famille 120-250');
     if(sp>15) return vATT('offset couple instable (écart '+sp+')');
     if(mx(col(ss,'cur'))>6) return vATT('courant non nul au repos');
-    return vOK('offset '+m.toFixed(0)+', stable (écart '+sp+'), courant nul'); }},
+    return vOK('offset '+m.toFixed(0)+refNote(m, REF.offset, null).txt+', stable (écart '+sp+'), courant nul'); }},
 
  {id:'A2',title:'Capteur de cadence (manuel)',dur:15,duty:0,manual:true,
   instr:"<b>À la main</b> : tournez les manivelles <b>régulièrement</b>, une dizaine de tours. Le moteur ne tourne pas.",
@@ -818,7 +841,10 @@ const PROTO_A=[
     const e=mx(col(ss,'erps'));
     if(!e) return vKO('le rotor n’a pas tourné (ERPS resté nul à 20 % de duty)');
     proto.takeoff=takeoff;
-    return vOK('décollage à '+(takeoff!=null?D2P(takeoff)+' % de duty':'?')+', ERPS max '+e); }},
+    const tp = takeoff!=null ? D2P(takeoff) : null;
+    if(tp!=null && Math.abs(tp-REF.takeoff)>5)
+      return vATT('décollage à '+tp+' % de duty (réf '+REF.takeoff+' %) — seuil décalé : frottements, Hall ou transmission à vérifier');
+    return vOK('décollage à '+(tp!=null?tp+' % de duty (réf '+REF.takeoff+' %)':'?')+', ERPS max '+e); }},
 
  {id:'A4a',title:'Palier 25 %',duty:25,ramp:20,settle:2,dur:5,instr:"Palier stabilisé — mesure du régime et du courant à vide.",check:ckPlateau},
  {id:'A4b',title:'Palier 35 %',duty:35,ramp:20,settle:2,dur:5,instr:"Palier stabilisé.",check:ckPlateau},
@@ -848,7 +874,11 @@ const PROTO_A=[
     if(halls.size<6) return vATT('seulement '+halls.size+' états Hall vus sur 6 — capteur ou commutation à vérifier');
     const jitter=sdev(es)/Math.max(1,mean(es));
     if(jitter>0.08) return vATT('régime instable à plein duty (±'+(jitter*100).toFixed(0)+'%) — ERPS max '+e);
-    return vOK('ERPS max '+e+', 6 états Hall, régime stable, courant max '+A(c)+' A, FOC moy '+proto.focHigh.toFixed(1)); }},
+    // la comparaison n'a de sens que si le display a laisse monter a ~85 %
+    // (un display < 2.18.7 plafonne a 60 % -> regime forcement plus bas)
+    const rn = mx(col(ss,'duty'))>=75 ? refNote(e, REF.erpsMax85, 12) : {txt:'',out:false};
+    if(rn.out) return vATT('ERPS max '+e+rn.txt+' — régime hors référence : Hall, frottements ou tension batterie');
+    return vOK('ERPS max '+e+rn.txt+', 6 états Hall, régime stable, courant max '+A(c)+' A, FOC moy '+proto.focHigh.toFixed(1)); }},
 
  {id:'A6',title:'Démarrages répétés',duty:t=>(t%7<3.5?30:0),ramp:60,dur:21,
   instr:"Trois cycles <b>marche / arrêt</b> automatiques. Le moteur doit repartir à chaque fois, sans à-coup ni blocage.",
@@ -871,7 +901,7 @@ const PROTO_A=[
     // Resolution reelle : consigne toutes les 500 ms, telemetrie a 5 Hz — on ne
     // mesure pas mieux que ~0,3 s. Le seuil ne juge donc qu'un defaut franc.
     if(dt>1.5) return vATT('montée en '+dt.toFixed(2)+' s — lente à vide (résolution ±0,3 s)');
-    return vOK('montée en '+dt.toFixed(2)+' s jusqu’à '+mx(col(ss,'erps'))+' ERPS'); }},
+    return vOK('montée en '+dt.toFixed(2)+' s'+refNote(dt, REF.rise, null).txt+' jusqu’à '+mx(col(ss,'erps'))+' ERPS'); }},
 
  {id:'A8',title:'Coupure et roue libre',duty:t=>(t<4?40:0),ramp:30,dur:12,
   instr:"Coupure nette après 4 s. Le rotor doit ralentir librement — une décroissance anormalement rapide trahit un frottement ou un court de phase.",
@@ -888,7 +918,7 @@ const PROTO_A=[
        moteur a l'autre, ou dans le temps, signalera un frottement. */
     if(stopAt==null) return vOK('rotor encore en rotation en fin d’étape depuis '+peak+' ERPS — roue libre très longue, à comparer entre moteurs');
     const dt=(stopAt-cutAt)/1000; proto.coastTime=dt;
-    return vOK('roue libre '+dt.toFixed(2)+' s (±0,2 s) depuis '+peak+' ERPS — métrique de référence, à comparer entre moteurs'); }},
+    return vOK('roue libre '+dt.toFixed(2)+' s (±0,2 s'+refNote(dt, REF.coast, null).txt+') depuis '+peak+' ERPS'); }},
 
  /* Pas d'etape frein : les montages Syklo n'ont pas de capteur de frein
     (constat atelier 2026-07-24). Le garde-fou « frein = arret » du mode banc
@@ -905,7 +935,11 @@ function ckPlateau(ss){
   const jitter=sdev(es)/Math.max(1,e);
   if(!e) return vKO('rotor immobile à '+d+' % de duty');
   if(jitter>0.10) return vATT(d+' % → '+e.toFixed(0)+' ERPS instable (±'+(jitter*100).toFixed(0)+'%), '+A(c)+' A');
-  return vOK(d+' % → '+e.toFixed(0)+' ERPS, '+A(c)+' A');
+  // comparaison a l'etalon (tolerance 12 % : la repetabilite mesuree est 4-6 %)
+  const ref = REF.plateau[d] ?? REF.plateau[d+1] ?? REF.plateau[d-1];
+  const rn = refNote(e, ref, 12);
+  if(rn.out) return vATT(d+' % → '+e.toFixed(0)+' ERPS'+rn.txt+' — hors référence, '+A(c)+' A');
+  return vOK(d+' % → '+e.toFixed(0)+' ERPS'+rn.txt+', '+A(c)+' A');
 }
 
 const PROTO_B=[
@@ -932,7 +966,7 @@ const PROTO_B=[
     proto.torqueLoadDelta=dmax;
     if(dmax<40) return vKO('capteur de couple muet sous charge (delta max '+dmax+') — ou à-coups trop timides');
     if(dmax<80) return vATT('réponse faible sous charge (delta max '+dmax+') — accélérer plus franchement, ou capteur à surveiller');
-    return vOK('delta max '+dmax+' sous charge — le capteur de couple répond'); }},
+    return vOK('delta max '+dmax+refNote(dmax, REF.b1bDelta, null).txt+' sous charge — le capteur de couple répond'); }},
 
  {id:'B2',title:'Montée en charge',duty:45,ramp:8,settle:5,dur:15,res:100,
   instr:"Montée progressive à 45 % contre la résistance maximale. La chaîne se tend — restez à l’écart.",
@@ -962,12 +996,14 @@ const PROTO_B=[
   check(ss){ const g=errGate(ss); if(g) return g;
     const c=mx(col(ss,'cur')), sag=proto.baseVolt?(proto.baseVolt-mn(col(ss,'voltX10'))):null;
     if(sag!=null) proto.sagMax=sag;
-    let det='courant max '+A(c)+' A';
+    const rn = refNote(c, REF.b3cur, 30, r=>A(r)+' A');
+    let det='courant max '+A(c)+' A'+rn.txt;
     if(sag!=null) det+=', sag '+(sag/10).toFixed(1)+' V';
     if(c>150) return vKO(det+' — au-dessus du plafond attendu');
     if(sag!=null&&sag>60) return vATT(det+' — sag batterie élevé');
     if(c<60) return vATT(det+' — moteur peu chargé, résistance insuffisante');
-    return vOK(det+', régulation au cap'); }},
+    if(rn.out) return vATT(det+' — courant hors référence à consigne égale');
+    return vOK(det); }},
 
  {id:'B4',title:'Pic de puissance',duty:85,ramp:30,settle:3,dur:15,res:100,
   instr:"Montée à 85 % sous charge maximale — c’est ici que la régulation de courant (23 A) doit plafonner. Restez à l’écart de la transmission.",
@@ -977,9 +1013,12 @@ const PROTO_B=[
        2026-07-24 : 0-3 a vide, 10 a 15,7 A). On le releve au pic. */
     const hiC=ss.filter(x=>x.cur>40);
     if(hiC.length) proto.focLoad=mean(col(hiC,'foc'));
-    let det='Pbatt max '+p+' W, courant max '+A(c)+' A';
+    const rc = refNote(c, REF.b4cur, 10, r=>A(r)+' A');
+    const rp = refNote(p, REF.b4pow, null);
+    let det='Pbatt max '+p+' W'+rp.txt+', courant max '+A(c)+' A'+rc.txt;
     if(c>150) return vKO(det+' — courant au-dessus du plafond');
     if(c<80) return vATT(det+' — la régulation n’a pas été approchée (vitesse roue trop faible ? braquet ?)');
+    if(rc.out) return vATT(det+' — écart au cap de référence');
     return vOK(det+(c>=130?' — régulation au cap, comportement attendu':'')); }},
 
  /* Plus de rearmement intermediaire : le budget de marche du display est

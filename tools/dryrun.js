@@ -83,9 +83,12 @@ function armPhysically(){ disp.state=1; disp.duty=0; disp.deadman=20; disp.runti
 // ---- telemetrie simulee : modele grossier duty -> ERPS ------------------
 let erps = 0, seq = 0;
 function pushTelemetry(){
-  const target = disp.state===2 ? disp.duty*1.8 : 0;      // ~275 ERPS a 152
+  // courbe calee sur l'ETALON reel : erps = (duty% - 8) * 3.2 a vide
+  // (paliers 25->55, 55->150, 85->246 : dans les tolerances de REF)
+  const pct = disp.duty*100/254;
+  const target = disp.state===2 ? Math.max(0,(pct-8)*3.2) : 0;
   erps += (target - erps) * 0.35;                          // 1er ordre
-  const cur = disp.state===2 ? Math.max(0, erps*0.25) : 2;
+  const cur = disp.state===2 ? Math.min(143, Math.max(0, erps*0.58)) : 2;
   const dv = new DataView(new ArrayBuffer(19));
   dv.setUint8(0,0x04); dv.setUint8(1,seq++ & 0xff);
   dv.setUint16(2,180,true); dv.setUint16(4,5,true);        // torque, delta
