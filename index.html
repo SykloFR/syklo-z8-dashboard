@@ -1283,12 +1283,15 @@ const PROTO_B=[
    assistance fantome, assistance absente). Une fois le run sain fait, reporter
    les valeurs ici (extension make-reference a venir).
    ========================================================================= */
-const REFC = { c1corr:null,     // correlation delta <-> Proue en pedalage tranquille
-               c1delta:null,    // delta median a ~60 rpm / res 50 %
-               ratios:null,     // [5] courant / (delta*cad) par niveau
-               jerk:null,       // indice d'a-coups a pedalage constant
-               rise:null,       // latence de montee de l'assistance (s)
-               cut:null };      // latence de coupure apres arret de pedalage (s)
+/* Reference provisoire : run moteur sain du 2026-07-29 14:39 (v1.0.5), n=1.
+   ⚠ batterie a 45,3 V sur ce run — refaire l'etalon batterie chargee
+   (~48,5 V) avant de figer. Progression mesuree a ±5 % de la loi aT. */
+const REFC = { c1corr:null,     // correlation delta <-> Proue — calculee sur TOUT C1 (dynamique large)
+               c1delta:32,      // delta median a ~60 rpm / res 50 %
+               ratios:[5.6, 9.7, 14.9, 20.7, 36.6],  // courant/(delta*cad) x1000 par niveau
+               jerk:0.10,       // oscillation du courant a pedalage constant (7-12 % mesures)
+               rise:1.2,        // latence de montee (n=1, faible confiance)
+               cut:0.1 };       // over-run : 0,0 s mesure avec P12 v1.0.5
 
 // correlation de Pearson — la METRIQUE du profil capteur : un capteur sain
 // donne delta ∝ effort ∝ Proue (r > ~0.7 attendu), un capteur a dropouts ou
@@ -1321,7 +1324,8 @@ const PROTO_C=[
     const m=mean(col(ss,'torque')); proto.torqueOffset=m;
     proto.baseVolt=mean(col(ss,'voltX10'));
     const c=mx(col(ss,'cur'));
-    const det='offset '+m.toFixed(0)+refNote(m, REF.offset, null).txt+', courant '+A(c)+' A';
+    let det='offset '+m.toFixed(0)+refNote(m, REF.offset, null).txt+', courant '+A(c)+' A, batterie '+(proto.baseVolt/10).toFixed(1)+' V';
+    if(proto.baseVolt<475) det+=' — ⚠ batterie basse : run NON éligible comme référence (recharger à ~48,5 V)';
     if(c>6) return vKO(det+' — COURANT SANS PÉDALAGE : assistance fantôme, c’est déjà un diagnostic');
     if(errSeen(ss)) return vATT(det+' — erreur présente : '+errWhy(ss)+' (notée, on continue)');
     return vOK(det); }},
@@ -1332,20 +1336,23 @@ const PROTO_C=[
   check(ss){
     const w=ss.filter(x=>x.cad>30);
     if(w.length<10) return vATT('pédalage trop court pour corréler — refaire');
-    const r=pearson(w.map(x=>x.delta), w.map(x=>x.pmeca||0));
+    /* La correlation delta<->Proue se calcule en C1d sur TOUT le bloc C1 :
+       sur un effort volontairement CONSTANT elle ne mesure que du bruit
+       (r=-0,19 sur un capteur sain au run du 2026-07-29 — defaut de
+       conception corrige). Ici : niveau et stabilite seulement. */
     const dm=w.map(x=>x.delta).sort((a,b)=>a-b)[Math.floor(w.length/2)];
-    proto.c1corr=r; proto.c1delta=dm; proto.torqueLowDelta=dm;
+    proto.c1delta=dm; proto.torqueLowDelta=dm;
     proto.cadPct=Math.max(proto.cadPct||0, Math.round(w.length/ss.length*100));
-    let det='delta médian '+dm+refNote(dm, REFC.c1delta, null).txt
-      +(r!=null?', corrélation couple↔roue r='+r.toFixed(2)+refNote(r, REFC.c1corr, null).txt:' (Proue absente : connectez le trainer)');
+    (proto.c1all=proto.c1all||[]).push(...w);
+    let det='delta médian '+dm+refNote(dm, REFC.c1delta, null).txt;
     if(dm<8) return vKO(det+' — le capteur ne voit pas un effort modéré (zone morte ?)');
-    if(r!=null && r<0.4) return vATT(det+' — couple décorrélé de la puissance roue : dropouts ou réponse erratique');
     return vOK(det); }},
 
  {id:'C1b',title:'Profil couple — attaques départ arrêté',dur:20,res:100,
   wait:{label:'Laissez la roue (quasi) s’arrêter, puis 1re attaque debout…',cond:d=>d.delta>60},
   instr:"<b>3 attaques DEBOUT</b> depuis roue quasi arrêtée, en laissant ralentir entre chaque — l’inertie du volant fait la charge. Amplitude et répétabilité du capteur.",
   check(ss){
+    (proto.c1all=proto.c1all||[]).push(...ss.filter(x=>x.cad>0||x.delta>30));
     let peaks=[], lo=true, cur=0;
     for(const x of ss){
       if(x.delta>60){ lo=false; cur=Math.max(cur,x.delta); }
@@ -1366,6 +1373,7 @@ const PROTO_C=[
   instr:"Résistance abaissée : <b>moulinez ~90 rpm</b> en forçant le moins possible. Le capteur ne doit pas inventer du couple à haute cadence.",
   check(ss){
     const w=ss.filter(x=>x.cad>60);
+    (proto.c1all=proto.c1all||[]).push(...w);
     if(w.length<8) return vATT('cadence haute pas tenue — refaire');
     const dm=w.map(x=>x.delta).sort((a,b)=>a-b)[Math.floor(w.length/2)];
     proto.c1cHigh=dm;
@@ -1379,9 +1387,17 @@ const PROTO_C=[
     if(!tail.length) return vATT('fenêtre vide');
     const m=mean(col(tail,'torque'));
     const drift=proto.torqueOffset!=null ? m-proto.torqueOffset : null;
+    // correlation delta<->Proue sur TOUT le bloc C1 : la dynamique (tranquille
+    // + attaques + moulinage, delta 10->160) rend le r significatif
+    const all=(proto.c1all||[]).filter(x=>x.pmeca!=null);
+    const r=all.length>25 ? pearson(all.map(x=>x.delta), all.map(x=>x.pmeca||0)) : null;
+    proto.c1corr=r;
+    let det='offset revenu à '+m.toFixed(0)+(drift!=null?' (dérive '+drift.toFixed(0)+')':'')
+      +(r!=null?' · corrélation couple↔roue sur tout C1 : r='+r.toFixed(2)+refNote(r, REFC.c1corr, null).txt:'');
     if(drift!=null && Math.abs(drift)>15)
-      return vATT('offset après effort '+m.toFixed(0)+' (dérive '+drift.toFixed(0)+' vs repos) — hystérésis du capteur');
-    return vOK('offset revenu à '+m.toFixed(0)+(drift!=null?' (dérive '+drift.toFixed(0)+')':'')); }},
+      return vATT('offset après effort '+m.toFixed(0)+' (dérive '+drift.toFixed(0)+') — hystérésis du capteur'+(r!=null?' · r='+r.toFixed(2):''));
+    if(r!=null && r<0.5) return vATT(det+' — couple décorrélé de la puissance roue : dropouts ou réponse erratique');
+    return vOK(det); }},
 
  {id:'C2L1',title:'Assistance niveau 1',dur:18,res:100,target:{cad:70},
   wait:{label:'Passez au niveau 1 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===1 && d.cad>40},
@@ -1393,11 +1409,13 @@ const PROTO_C=[
     const drive=mean(w.map(x=>x.delta*x.cad));
     const ratio=drive>100 ? cm/drive*1000 : null;
     const jk=jerkIndex(w);
+    const rr=refNote(ratio, REFC.ratios&&REFC.ratios[0], 25);
     (proto.lvlStats=proto.lvlStats||[]).push({lvl:1, cur:cm, ratio, jerk:jk});
     // maintien : l'assistance ne doit pas s'evanouir pendant le palier
     const h=Math.floor(w.length/2);
     const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
-    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2)+(rr.txt||''):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(rr.out) return vATT(det+' — ratio hors référence à ce niveau');
     if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 1 malgré l’effort');
     if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
     if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
@@ -1413,11 +1431,13 @@ const PROTO_C=[
     const drive=mean(w.map(x=>x.delta*x.cad));
     const ratio=drive>100 ? cm/drive*1000 : null;
     const jk=jerkIndex(w);
+    const rr=refNote(ratio, REFC.ratios&&REFC.ratios[1], 25);
     (proto.lvlStats=proto.lvlStats||[]).push({lvl:2, cur:cm, ratio, jerk:jk});
     // maintien : l'assistance ne doit pas s'evanouir pendant le palier
     const h=Math.floor(w.length/2);
     const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
-    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2)+(rr.txt||''):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(rr.out) return vATT(det+' — ratio hors référence à ce niveau');
     if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 2 malgré l’effort');
     if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
     if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
@@ -1433,11 +1453,13 @@ const PROTO_C=[
     const drive=mean(w.map(x=>x.delta*x.cad));
     const ratio=drive>100 ? cm/drive*1000 : null;
     const jk=jerkIndex(w);
+    const rr=refNote(ratio, REFC.ratios&&REFC.ratios[2], 25);
     (proto.lvlStats=proto.lvlStats||[]).push({lvl:3, cur:cm, ratio, jerk:jk});
     // maintien : l'assistance ne doit pas s'evanouir pendant le palier
     const h=Math.floor(w.length/2);
     const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
-    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2)+(rr.txt||''):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(rr.out) return vATT(det+' — ratio hors référence à ce niveau');
     if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 3 malgré l’effort');
     if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
     if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
@@ -1453,11 +1475,13 @@ const PROTO_C=[
     const drive=mean(w.map(x=>x.delta*x.cad));
     const ratio=drive>100 ? cm/drive*1000 : null;
     const jk=jerkIndex(w);
+    const rr=refNote(ratio, REFC.ratios&&REFC.ratios[3], 25);
     (proto.lvlStats=proto.lvlStats||[]).push({lvl:4, cur:cm, ratio, jerk:jk});
     // maintien : l'assistance ne doit pas s'evanouir pendant le palier
     const h=Math.floor(w.length/2);
     const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
-    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2)+(rr.txt||''):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(rr.out) return vATT(det+' — ratio hors référence à ce niveau');
     if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 4 malgré l’effort');
     if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
     if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
@@ -1473,6 +1497,7 @@ const PROTO_C=[
     const drive=mean(w.map(x=>x.delta*x.cad));
     const ratio=drive>100 ? cm/drive*1000 : null;
     const jk=jerkIndex(w);
+    const rr=refNote(ratio, REFC.ratios&&REFC.ratios[4], 25);
     (proto.lvlStats=proto.lvlStats||[]).push({lvl:5, cur:cm, ratio, jerk:jk});
     /* SYNTHESE CAPTEURS (diag complet a chaque run C, demande 2026-07-29) :
        la fenetre L5 est la plus chargee et la plus rapide — Hall, vitesse
@@ -1492,7 +1517,8 @@ const PROTO_C=[
     // maintien : l'assistance ne doit pas s'evanouir pendant le palier
     const h=Math.floor(w.length/2);
     const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
-    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2)+(rr.txt||''):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(rr.out) return vATT(det+' — ratio hors référence à ce niveau');
     if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 5 malgré l’effort');
     if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
     if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
@@ -1521,7 +1547,9 @@ const PROTO_C=[
                 : {txt:'💥 PIC MAINTENANT — appuyez FORT', urgent:true}; },
   check(ss){ const g=errGate(ss); if(g) return g;
     const base=ss.length?ss.map(x=>x.delta).sort((a,b)=>a-b)[Math.floor(ss.length/2)]:0;
-    const thr=Math.max(60, base*2);
+    /* seuil releve (90 / base*3) : a 60, les coups de pedale ordinaires
+       comptaient comme pics (5 detectes pour 3 demandes au run 14-39) */
+    const thr=Math.max(90, base*3);
     const peaks=[]; let inp=false, dmax=0, cmax=0, t0=0, tCmax=0;
     for(const x of ss){
       if(x.delta>thr){
