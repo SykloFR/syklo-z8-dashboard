@@ -158,6 +158,7 @@
     <div class="pbar"><div id="pBarStep" style="width:0%"></div></div>
     <div class="pbar total"><div id="pBarTot" style="width:0%"></div></div>
     <div class="proto-step" id="pTitle"></div>
+    <div id="pPrompt" hidden style="font-size:26px;font-weight:800;text-align:center;padding:10px;border-radius:8px;margin:6px 0"></div>
     <div class="proto-instr" id="pInstr"></div>
     <div id="pWait" class="proto-wait" hidden></div>
     <div class="bar" style="margin-top:10px">
@@ -1512,9 +1513,12 @@ const PROTO_C=[
     latence (montee du courant), repetabilite entre pics. C'est la signature
     attendue d'une assistance « par a-coups » type JL Doll : gains irreguliers,
     sur-oscillation apres le pic. Niveau 3 = courants moderes. */
- {id:'C2p',title:'Réponse aux pics de couple',dur:20,res:100,target:{cad:60},
+ {id:'C2p',title:'Réponse aux pics de couple',dur:21,res:100,target:{cad:60},
   wait:{label:'Redescendez au niveau 3 (▼) et pédalez léger…',cond:d=>curLvl===3 && d.cad>40},
-  instr:"Niveau <b>3</b> : pédalage léger continu, puis <b>3 pics de puissance francs</b> espacés de ~4 s — <b>sans arrêter de pédaler</b> entre les pics.",
+  instr:"Niveau <b>3</b> : suivez le guide — pédalage léger, et un <b>PIC</b> (appui violent 2 s, sans cesser de tourner) quand l’écran le demande.",
+  prompt:el=>{ const ph=el%7;
+    return ph<5 ? {txt:'pédalage léger… pic dans '+Math.ceil(5-ph)+' s', urgent:false}
+                : {txt:'💥 PIC MAINTENANT — appuyez FORT', urgent:true}; },
   check(ss){ const g=errGate(ss); if(g) return g;
     const base=ss.length?ss.map(x=>x.delta).sort((a,b)=>a-b)[Math.floor(ss.length/2)]:0;
     const thr=Math.max(60, base*2);
@@ -1541,7 +1545,10 @@ const PROTO_C=[
 
  {id:'C3',title:'Réactivité & décroissance',dur:30,res:100,target:{cad:70},
   wait:{label:'Redescendez au niveau 3 (▼) et pédalez…',cond:d=>curLvl===3 && d.cad>40},
-  instr:"Niveau <b>3</b> : pédalez 6 s, <b>STOP NET</b> 4 s, reprenez — 2 cycles. Latence de montée, over-run à la coupure, profils de progressivité/décroissance.",
+  instr:"Niveau <b>3</b> : suivez le guide — PÉDALEZ quand c’est vert, <b>STOP NET</b> (pieds immobiles, sans appui) quand c’est rouge.",
+  prompt:el=>{ const ph=el%10;
+    return ph<6 ? {txt:'🚴 PÉDALEZ ~70 rpm ('+Math.ceil(6-ph)+' s)', urgent:false}
+                : {txt:'✋ STOP NET — pieds immobiles ('+Math.ceil(10-ph)+' s)', urgent:true}; },
   check(ss){
     const events={rise:[], cut:[]};
     let pedaling=null, steady=0;
@@ -1762,6 +1769,16 @@ function protoTick(){
      rapporte (0x06, runtime en ticks de 100 ms) — c'est lui qui coupera.
      Repli local 300 s (2.18.6) si la trame manque. */
   let chip = st.res!=null ? 'résistance '+st.res+' %' : '';
+  /* GUIDE RYTHME (C2p/C3) : « je n'ai pas bien compris ce qui etait
+     demande » — la consigne du MOMENT s'affiche en gros et en couleur,
+     rythmee par le chrono de l'etape, comme le badge cadence. */
+  const pr=$('pPrompt');
+  if(st.prompt && p.state==='running'){
+    const g=st.prompt(el);
+    pr.hidden=false; pr.textContent=g.txt;
+    pr.style.background=g.urgent?'#7a1f1c':'#1e6b3f'; pr.style.color='#fff';
+  } else pr.hidden=true;
+
   // cibles en direct (phase C) : badge cadence COLORE — vert dans ±15 % de la
   // cible, orange dans ±30 %, rouge au-dela (demande atelier 2026-07-29)
   const cadBadge=$('pCad');
