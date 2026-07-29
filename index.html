@@ -1590,6 +1590,12 @@ function startProto(phase){
     if(curMode!==1){ alert('Phase C : passez le mode d’assistance en TORQUE au menu display (actuel : '+(MODES[curMode]??'?')+').'); return; }
     if(curStreet){ alert('Phase C : désactivez le STREET MODE — en mode normal il bride réellement les niveaux.'); return; }
     if(curLvl!==0){ alert('Phase C : mettez le niveau d’assistance à 0 pour le départ (actuel : '+curLvl+').'); return; }
+    /* AWE force la cadence interne du moteur a 1 : avec le delta SPIDER gele
+       a l'arret du pedalage, l'assistance s'auto-entretient a cadence
+       affichee 0 — c'est l'over-run de 10 s + l'err03 constates au run C du
+       2026-07-29. La telemetrie montre le 0 calcule AVANT le forcage : seul
+       ce flag reconcilie toutes les observations. */
+    if(aweOn){ alert('Phase C : désactivez « Assist with error » au menu display (il force la cadence interne à 1 → over-run garanti et mesures faussées). Puis OFF/ON pour partir propre.'); return; }
     if(!ftmsCtrl && !confirm('Home trainer sans contrôle FTMS : la résistance devra être réglée à la main. Continuer ?')) return;
   }
   if(phase!=='C' && (!bench || !bench.engagedSeen)){
