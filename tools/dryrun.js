@@ -88,27 +88,55 @@ function pushTelemetry(){
   // courbe calee sur l'ETALON reel : erps = (duty% - 8) * 3.2 a vide
   // (paliers 25->55, 55->150, 85->246 : dans les tolerances de REF)
   const pct = disp.duty*100/254;
-  const target = disp.state===2 ? Math.max(0,(pct-8)*3.2) : 0;
+  let target = disp.state===2 ? Math.max(0,(pct-8)*3.2) : 0;
+  if(HUMAN.cad>0) target = Math.max(target, HUMAN.cad*2.3);   // pedalage humain
   erps += (target - erps) * 0.35;                          // 1er ordre
   // courant : a vide 1-2 ADC (mesure reel). En charge, deux termes mesures au
   // banc reel : regime permanent ~0.27 ADC/ERPS (B5 75 % -> 56 ADC) + terme
   // d'ACCELERATION du volant (les relances B4 tirent le cap sur l'inertie).
-  const cur = disp.state!==2 ? 2
+  let cur;
+  if(HUMAN.cad>0 || simLvl>0) cur = assistCur();           // mode normal (phase C)
+  else cur = disp.state!==2 ? 2
             : (LOADED ? Math.min(143, erps*0.27 + Math.max(0,(target-erps))*2)
                       : Math.min(4, 1+erps*0.01));
   const dv = new DataView(new ArrayBuffer(19));
   dv.setUint8(0,0x04); dv.setUint8(1,seq++ & 0xff);
-  dv.setUint16(2,180,true); dv.setUint16(4,5,true);        // torque, delta
+  dv.setUint16(2,180+HUMAN.delta,true); dv.setUint16(4,HUMAN.delta,true); // torque, delta
   // duty remonte en POUR-CENT, comme le vrai moteur (ebike_app.c octet 15).
   // L'ancienne version remontait la valeur brute 0-254 : le harnais portait la
   // meme fausse hypothese que le dashboard, et le rodage n'a pas vu le bug.
-  dv.setUint8(6,0); dv.setUint8(7,Math.round((disp.state===2?disp.duty:0)*100/254));
+  dv.setUint8(6,HUMAN.cad); dv.setUint8(7,Math.round((disp.state===2?disp.duty:0)*100/254));
   dv.setUint16(8,Math.round(erps),true); dv.setUint8(10,0);
   dv.setUint16(11,Math.round(cur),true); dv.setUint16(13,480,true);
   dv.setUint8(15,0); dv.setUint8(16,1+(seq%6)); dv.setUint16(17,0,true);
   ctx('onNotify')({target:{value:dv}});
 }
 let LOSS = 0, lossBurst = 0, LOADED = false;   // LOADED : chaine montee (phase B)
+
+/* ---- PHASE C : pedaleur humain + moteur en MODE NORMAL simules ---- */
+const HUMAN = { cad:0, delta:0 };
+let simLvl = 0;
+const AT = [25,45,70,95,170];
+function assistCur(){
+  if(simLvl<1 || HUMAN.cad<15) return 0;
+  return Math.min(143, AT[simLvl-1]*HUMAN.delta*HUMAN.cad/6000);
+}
+function pushSyklo01(){
+  const dv=new DataView(new ArrayBuffer(19));
+  dv.setUint8(0,0x01);
+  dv.setUint8(16, 1+1);                     // mode torque (+1)
+  dv.setUint8(17, simLvl+1);
+  dv.setUint8(18, 45+1);
+  ctx('onNotify')({target:{value:dv}});
+}
+function pushSyklo02(){
+  const dv=new DataView(new ArrayBuffer(12));
+  dv.setUint8(0,0x02);
+  dv.setUint8(9, Math.round(assistCur()*0.16*48/10)+1);
+  dv.setUint8(10, 0+1);
+  dv.setUint8(11, 0+1);
+  ctx('onNotify')({target:{value:dv}});
+}
 function pushBenchState(){
   if(!disp.state && !disp.grace) return;
   if(lossBurst > 0){ lossBurst--; if(disp.state) disp.grace = 10; return; }
@@ -138,7 +166,8 @@ async function advance(ms){
     await new Promise(r=>setImmediate(r));
     NOW += 100;
     displayTick100();
-    if(NOW % 200 === 0){ pushTelemetry(); pushBenchState(); }
+    if(NOW % 200 === 0){ pushTelemetry(); pushBenchState(); pushSyklo02(); }
+    if(NOW % 2000 === 0){ pushSyklo01(); }
     for(const tm of [...timers]) while(tm.next <= NOW){ tm.next += tm.period;
       try{ tm.fn(); }catch(e){ OUT.errors.push('TIMER: '+e.message+' @'+e.stack.split('\n')[1]); } }
     const p = ctx('proto');
@@ -226,4 +255,36 @@ console.log('\n--- verdicts ---');
   console.log(`  ${r.v.padEnd(3)} ${r.id.padEnd(4)} ${r.title.padEnd(26)} ${r.d}`));
 console.log('\nduree phase B :', ((NOW-TB)/1000).toFixed(0), 's');
 console.log('ERREURS :', OUT.errors.length ? OUT.errors : 'aucune');
+
+// ==== 4. PHASE C : pedalage humain simule ====
+console.log('\n=== 4. phase C — pedalage humain simule ===');
+LOADED = false; sandbox.window._lastProto = null; OUT.alerts.length = 0;
+simLvl = 0; HUMAN.cad = 0; HUMAN.delta = 0;
+await advance(2500);                       // 0x01 doit etre vu (mode torque, niveau 0)
+ctx("startProto('C')");
+if(OUT.alerts.length) console.log('ALERTES :', OUT.alerts);
+guard = 0;
+while(ctx('proto') && guard++ < 600){
+  await advance(500);
+  const p = ctx('proto'); if(!p) break;
+  const id = p.curId;
+  if(id==='C0'){ HUMAN.cad=0; HUMAN.delta=0; }
+  else if(id==='C1a'){ HUMAN.cad=60; HUMAN.delta=35; }
+  else if(id==='C1b'){ advance.c1b=(advance.c1b||0)+1;
+    HUMAN.cad=20; HUMAN.delta=(advance.c1b%6<3)?160:10; }
+  else if(id==='C1c'){ HUMAN.cad=90; HUMAN.delta=18; }
+  else if(id==='C1d'){ HUMAN.cad=0; HUMAN.delta=0; }
+  else if(id && id.startsWith('C2L')){ simLvl=+id.slice(3); HUMAN.cad=70; HUMAN.delta=40; }
+  else if(id==='C3'){ simLvl=3; advance.c3=(advance.c3||0)+1;
+    if(advance.c3%20<12){ HUMAN.cad=70; HUMAN.delta=40; } else { HUMAN.cad=0; HUMAN.delta=5; } }
+  const ss=p.samples;
+  if(ss && ss.length)
+    ss[ss.length-1].pmeca = Math.round(HUMAN.delta*HUMAN.cad/18 + assistCur()*0.16*48*0.6);
+}
+HUMAN.cad=0; HUMAN.delta=0; simLvl=0;
+console.log('--- verdicts phase C ---');
+(sandbox.window._lastProto ? sandbox.window._lastProto.results : []).forEach(r=>
+  console.log(`  ${r.v.padEnd(3)} ${r.id.padEnd(5)} ${r.title.padEnd(40)} ${r.d}`));
+console.log('ERREURS :', OUT.errors.length ? OUT.errors.slice(0,4) : 'aucune');
+
 })();

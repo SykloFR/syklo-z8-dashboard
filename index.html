@@ -119,6 +119,7 @@
     <div class="bar" style="margin-bottom:6px">
       <button id="btnProtoA">▶ Phase A — moteur seul, chaîne déposée (~2 min)</button>
       <button id="btnProtoB">▶ Phase B — banc en charge (~4 min)</button>
+      <button id="btnProtoC">▶ Phase C — pédalage humain (~3 min 30)</button>
     </div>
     <div class="hint">
       Les deux phases pilotent le moteur par le <b>mode banc</b> : aucun pédalage,
@@ -135,6 +136,11 @@
       régulation 23 A), endurance ~700-800 W, coupure. Un seul bloc.
       Le <b>street mode n'affecte pas le banc</b> (la trame banc porte sa propre
       limite de vitesse, 99 km/h — vérifié par deux runs comparés le 2026-07-28).<br>
+      <b>C</b> = <b>pédalage humain</b>, assistance réelle (mode normal) — profil du
+      capteur de couple (corrélation couple ↔ puissance roue ↔ cadence), niveaux
+      1→5 enchaînés automatiquement, réactivité/maintien/décroissance de
+      l'assistance. Prérequis vérifiés au départ : mode <b>torque</b>, street
+      <b>OFF</b>, niveau <b>0</b>, mode banc désarmé, capteur de vitesse branché.<br>
       L'enregistrement JSONL démarre et se télécharge automatiquement (champ
       <code>bset</code> = consigne envoyée).
     </div>
@@ -413,6 +419,8 @@ function handle06(dv) {
   }
 }
 
+let lastCad = 0;   // derniere cadence vue (cibles en direct de la phase C)
+
 let lastPkt = 0;   // watchdog : dernier paquet 0x04 recu
 function handle04(dv) {
   const d = decode04(dv), now = Date.now();
@@ -429,6 +437,7 @@ function handle04(dv) {
   $('vErr').textContent = d.err ? errList(d.err).map(b=>b.code).join(' ') || '0x'+d.err.toString(16) : 'OK';
   $('vErrBits').textContent = d.err ? errTxt(d.err) : '';
   $('errTile').classList.toggle('bad', !!d.err);
+  lastCad = d.cad;
   hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps, err:d.err, pmeca:pmeca??0});
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
   // bset = consigne de duty envoyée en mode banc, pour corréler consigne / duty remonté
@@ -1266,6 +1275,248 @@ const PROTO_B=[
     return vOK('duty retombé en '+dt.toFixed(2)+' s après coupure'+coast); }},
 ];
 
+/* =========================================================================
+   PHASE C — pedalage humain. References a POSER au premier run sain :
+   tout est null -> verdicts informatifs (sauf defauts absolus : capteur muet,
+   assistance fantome, assistance absente). Une fois le run sain fait, reporter
+   les valeurs ici (extension make-reference a venir).
+   ========================================================================= */
+const REFC = { c1corr:null,     // correlation delta <-> Proue en pedalage tranquille
+               c1delta:null,    // delta median a ~60 rpm / res 50 %
+               ratios:null,     // [5] courant / (delta*cad) par niveau
+               jerk:null,       // indice d'a-coups a pedalage constant
+               rise:null,       // latence de montee de l'assistance (s)
+               cut:null };      // latence de coupure apres arret de pedalage (s)
+
+// correlation de Pearson — la METRIQUE du profil capteur : un capteur sain
+// donne delta ∝ effort ∝ Proue (r > ~0.7 attendu), un capteur a dropouts ou
+// zone morte decorrele.
+function pearson(xs, ys){
+  const n=Math.min(xs.length, ys.length); if(n<8) return null;
+  const mx_=mean(xs), my_=mean(ys);
+  let sxy=0, sxx=0, syy=0;
+  for(let i=0;i<n;i++){ const a=xs[i]-mx_, b=ys[i]-my_; sxy+=a*b; sxx+=a*a; syy+=b*b; }
+  return (sxx>0&&syy>0) ? sxy/Math.sqrt(sxx*syy) : null;
+}
+
+/* Indice d'A-COUPS : oscillation residuelle du courant d'assistance a
+   pedalage constant (moyenne glissante retiree -> reste les oscillations
+   0.3-2 Hz visibles a 5 Hz). Un moteur sain module doucement ; une assistance
+   « par a-coups » (symptome JL Doll) donne un residu eleve. */
+function jerkIndex(ss){
+  const w=ss.filter(x=>x.cad>40);
+  const cs=w.map(x=>x.cur); if(cs.length<15) return null;
+  const ma=cs.map((_,i)=>{ const a=cs.slice(Math.max(0,i-2), i+3); return a.reduce((x,y)=>x+y,0)/a.length; });
+  const res=cs.map((c,i)=>c-ma[i]);
+  const m=mean(cs); if(m<8) return null;
+  return Math.sqrt(mean(res.map(r=>r*r)))/m;
+}
+
+const PROTO_C=[
+ {id:'C0',title:'Contrôles préalables',dur:8,res:50,
+  instr:"Ne touchez à rien. Vérification des capteurs au repos et de l’absence d’assistance fantôme.",
+  check(ss){ if(!ss.length) return vKO('aucune donnée');
+    const m=mean(col(ss,'torque')); proto.torqueOffset=m;
+    const c=mx(col(ss,'cur'));
+    const det='offset '+m.toFixed(0)+refNote(m, REF.offset, null).txt+', courant '+A(c)+' A';
+    if(c>6) return vKO(det+' — COURANT SANS PÉDALAGE : assistance fantôme, c’est déjà un diagnostic');
+    if(errSeen(ss)) return vATT(det+' — erreur présente : '+errWhy(ss)+' (notée, on continue)');
+    return vOK(det); }},
+
+ {id:'C1a',title:'Profil couple — pédalage tranquille',dur:15,res:50,target:{cad:60},
+  wait:{label:'Pédalez tranquillement (~60 rpm) pour démarrer…',cond:d=>d.cad>30},
+  instr:"Assis, pédalage <b>tranquille et régulier</b> ~60 rpm, résistance 50 %. On corrèle couple ↔ puissance roue ↔ cadence.",
+  check(ss){
+    const w=ss.filter(x=>x.cad>30);
+    if(w.length<10) return vATT('pédalage trop court pour corréler — refaire');
+    const r=pearson(w.map(x=>x.delta), w.map(x=>x.pmeca||0));
+    const dm=w.map(x=>x.delta).sort((a,b)=>a-b)[Math.floor(w.length/2)];
+    proto.c1corr=r; proto.c1delta=dm;
+    let det='delta médian '+dm+refNote(dm, REFC.c1delta, null).txt
+      +(r!=null?', corrélation couple↔roue r='+r.toFixed(2)+refNote(r, REFC.c1corr, null).txt:' (Proue absente : connectez le trainer)');
+    if(dm<8) return vKO(det+' — le capteur ne voit pas un effort modéré (zone morte ?)');
+    if(r!=null && r<0.4) return vATT(det+' — couple décorrélé de la puissance roue : dropouts ou réponse erratique');
+    return vOK(det); }},
+
+ {id:'C1b',title:'Profil couple — attaques départ arrêté',dur:20,res:100,
+  wait:{label:'Laissez la roue (quasi) s’arrêter, puis 1re attaque debout…',cond:d=>d.delta>60},
+  instr:"<b>3 attaques DEBOUT</b> depuis roue quasi arrêtée, en laissant ralentir entre chaque — l’inertie du volant fait la charge. Amplitude et répétabilité du capteur.",
+  check(ss){
+    let peaks=[], lo=true, cur=0;
+    for(const x of ss){
+      if(x.delta>60){ lo=false; cur=Math.max(cur,x.delta); }
+      else if(!lo && x.delta<30){ peaks.push(cur); lo=true; cur=0; }
+    }
+    if(!lo && cur) peaks.push(cur);
+    proto.c1peaks=peaks;
+    if(!peaks.length) return vKO('aucune attaque vue (delta jamais > 60) — capteur amorphe ou attaques trop timides');
+    const spread=peaks.length>1 ? (mx(peaks)-mn(peaks))/mx(peaks) : 0;
+    let det=peaks.length+' attaque(s), delta pics '+peaks.map(x=>x.toFixed(0)).join(' / ');
+    if(peaks.length<3) return vATT(det+' — refaire 3 attaques pour juger la répétabilité');
+    if(spread>0.4) return vATT(det+' — amplitude irrégulière ('+(spread*100).toFixed(0)+' % d’écart) : capteur ou geste');
+    return vOK(det+' — amplitude répétable'); }},
+
+ {id:'C1c',title:'Profil couple — cadence haute, force faible',dur:15,res:20,target:{cad:90},
+  wait:{label:'Moulinez (~90 rpm), force légère…',cond:d=>d.cad>70},
+  instr:"Résistance abaissée : <b>moulinez ~90 rpm</b> en forçant le moins possible. Le capteur ne doit pas inventer du couple à haute cadence.",
+  check(ss){
+    const w=ss.filter(x=>x.cad>60);
+    if(w.length<8) return vATT('cadence haute pas tenue — refaire');
+    const dm=w.map(x=>x.delta).sort((a,b)=>a-b)[Math.floor(w.length/2)];
+    proto.c1cHigh=dm;
+    if(dm>80) return vATT('delta médian '+dm+' à force faible — le capteur surestime à haute cadence');
+    return vOK('delta médian '+dm+' à ~90 rpm force faible — pas de couple inventé'); }},
+
+ {id:'C1d',title:'Retour à zéro',dur:8,res:50,
+  instr:"<b>Stop net</b>, pieds immobiles jusqu’à la fin du chrono. L’offset doit revenir à sa valeur de repos.",
+  check(ss){
+    const tail=ss.slice(Math.floor(ss.length/2));
+    if(!tail.length) return vATT('fenêtre vide');
+    const m=mean(col(tail,'torque'));
+    const drift=proto.torqueOffset!=null ? m-proto.torqueOffset : null;
+    if(drift!=null && Math.abs(drift)>15)
+      return vATT('offset après effort '+m.toFixed(0)+' (dérive '+drift.toFixed(0)+' vs repos) — hystérésis du capteur');
+    return vOK('offset revenu à '+m.toFixed(0)+(drift!=null?' (dérive '+drift.toFixed(0)+')':'')); }},
+
+ {id:'C2L1',title:'Assistance niveau 1',dur:18,res:100,target:{cad:70},
+  wait:{label:'Passez au niveau 1 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===1 && d.cad>40},
+  instr:"Niveau <b>1</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  check(ss){
+    const w=ss.filter(x=>x.cad>40);
+    if(w.length<10) return vATT('pédalage pas tenu au niveau 1');
+    const cm=mean(col(w,'cur'));
+    const drive=mean(w.map(x=>x.delta*x.cad));
+    const ratio=drive>100 ? cm/drive*1000 : null;
+    const jk=jerkIndex(w);
+    (proto.lvlStats=proto.lvlStats||[]).push({lvl:1, cur:cm, ratio, jerk:jk});
+    // maintien : l'assistance ne doit pas s'evanouir pendant le palier
+    const h=Math.floor(w.length/2);
+    const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 1 malgré l’effort');
+    if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
+    if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
+    // (verdict de progression au niveau 5)
+    return vOK(det); }},
+ {id:'C2L2',title:'Assistance niveau 2',dur:18,res:100,target:{cad:70},
+  wait:{label:'Passez au niveau 2 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===2 && d.cad>40},
+  instr:"Niveau <b>2</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  check(ss){
+    const w=ss.filter(x=>x.cad>40);
+    if(w.length<10) return vATT('pédalage pas tenu au niveau 2');
+    const cm=mean(col(w,'cur'));
+    const drive=mean(w.map(x=>x.delta*x.cad));
+    const ratio=drive>100 ? cm/drive*1000 : null;
+    const jk=jerkIndex(w);
+    (proto.lvlStats=proto.lvlStats||[]).push({lvl:2, cur:cm, ratio, jerk:jk});
+    // maintien : l'assistance ne doit pas s'evanouir pendant le palier
+    const h=Math.floor(w.length/2);
+    const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 2 malgré l’effort');
+    if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
+    if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
+    // (verdict de progression au niveau 5)
+    return vOK(det); }},
+ {id:'C2L3',title:'Assistance niveau 3',dur:18,res:100,target:{cad:70},
+  wait:{label:'Passez au niveau 3 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===3 && d.cad>40},
+  instr:"Niveau <b>3</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  check(ss){
+    const w=ss.filter(x=>x.cad>40);
+    if(w.length<10) return vATT('pédalage pas tenu au niveau 3');
+    const cm=mean(col(w,'cur'));
+    const drive=mean(w.map(x=>x.delta*x.cad));
+    const ratio=drive>100 ? cm/drive*1000 : null;
+    const jk=jerkIndex(w);
+    (proto.lvlStats=proto.lvlStats||[]).push({lvl:3, cur:cm, ratio, jerk:jk});
+    // maintien : l'assistance ne doit pas s'evanouir pendant le palier
+    const h=Math.floor(w.length/2);
+    const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 3 malgré l’effort');
+    if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
+    if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
+    // (verdict de progression au niveau 5)
+    return vOK(det); }},
+ {id:'C2L4',title:'Assistance niveau 4',dur:18,res:100,target:{cad:70},
+  wait:{label:'Passez au niveau 4 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===4 && d.cad>40},
+  instr:"Niveau <b>4</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  check(ss){
+    const w=ss.filter(x=>x.cad>40);
+    if(w.length<10) return vATT('pédalage pas tenu au niveau 4');
+    const cm=mean(col(w,'cur'));
+    const drive=mean(w.map(x=>x.delta*x.cad));
+    const ratio=drive>100 ? cm/drive*1000 : null;
+    const jk=jerkIndex(w);
+    (proto.lvlStats=proto.lvlStats||[]).push({lvl:4, cur:cm, ratio, jerk:jk});
+    // maintien : l'assistance ne doit pas s'evanouir pendant le palier
+    const h=Math.floor(w.length/2);
+    const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 4 malgré l’effort');
+    if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
+    if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
+    // (verdict de progression au niveau 5)
+    return vOK(det); }},
+ {id:'C2L5',title:'Assistance niveau 5',dur:18,res:100,target:{cad:70},
+  wait:{label:'Passez au niveau 5 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===5 && d.cad>40},
+  instr:"Niveau <b>5</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  check(ss){
+    const w=ss.filter(x=>x.cad>40);
+    if(w.length<10) return vATT('pédalage pas tenu au niveau 5');
+    const cm=mean(col(w,'cur'));
+    const drive=mean(w.map(x=>x.delta*x.cad));
+    const ratio=drive>100 ? cm/drive*1000 : null;
+    const jk=jerkIndex(w);
+    (proto.lvlStats=proto.lvlStats||[]).push({lvl:5, cur:cm, ratio, jerk:jk});
+    // maintien : l'assistance ne doit pas s'evanouir pendant le palier
+    const h=Math.floor(w.length/2);
+    const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
+    let det='courant moy '+A(cm)+' A'+(ratio!=null?', ratio '+ratio.toFixed(2):'')+(jk!=null?', à-coups '+(jk*100).toFixed(0)+' %':'');
+    if(cm<8 && drive>200) return vKO(det+' — AUCUNE assistance au niveau 5 malgré l’effort');
+    if(jk!=null && jk>0.30) return vATT(det+' — assistance par à-coups marqués');
+    if(sustain<0.6) return vATT(det+' — l’assistance s’évanouit en cours de palier (maintien '+(sustain*100).toFixed(0)+' %)');
+    // verdict transversal : la progression 1->5 doit suivre les facteurs
+    // configures (cfg.aT) — c'est la LOI de l'assistance torque
+    if((proto.lvlStats||[]).length>=4){
+      const ls=proto.lvlStats.filter(x=>x.ratio!=null);
+      let mono=true;
+      for(let i=1;i<ls.length;i++) if(ls[i].ratio<=ls[i-1].ratio*0.9) mono=false;
+      det+=' · progression '+ls.map(x=>x.ratio.toFixed(1)).join('→');
+      if(!mono) return vATT(det+' — la progression des niveaux ne suit pas la loi attendue');
+    }
+    return vOK(det); }},
+
+ {id:'C3',title:'Réactivité & décroissance',dur:30,res:100,target:{cad:70},
+  wait:{label:'Redescendez au niveau 3 (▼) et pédalez…',cond:d=>curLvl===3 && d.cad>40},
+  instr:"Niveau <b>3</b> : pédalez 6 s, <b>STOP NET</b> 4 s, reprenez — 2 cycles. Latence de montée, over-run à la coupure, profils de progressivité/décroissance.",
+  check(ss){
+    const events={rise:[], cut:[]};
+    let pedaling=null, steady=0;
+    for(let i=1;i<ss.length;i++){
+      const a=ss[i-1], b=ss[i];
+      if(a.cad<10 && b.cad>=20) pedaling=b.t;                       // reprise
+      if(pedaling && b.cur>Math.max(12, steady*0.6) && events.rise.length<3 && b.t>pedaling)
+        { events.rise.push((b.t-pedaling)/1000); pedaling=null; }
+      if(b.cad>40) steady=Math.max(steady, b.cur);
+      if(a.cad>=20 && b.cad<10){                                    // arret net
+        const t0=b.t;
+        for(let j=i;j<ss.length;j++)
+          if(ss[j].cur<8){ events.cut.push((ss[j].t-t0)/1000); break; }
+      }
+    }
+    proto.c3rise=events.rise; proto.c3cut=events.cut;
+    if(!events.cut.length) return vATT('aucun arrêt net détecté — refaire les cycles');
+    const cutMax=mx(events.cut);
+    let det='montée '+(events.rise.length?events.rise.map(x=>x.toFixed(1)).join('/')+' s':'?')
+      +refNote(events.rise.length?mean(events.rise):null, REFC.rise, null).txt
+      +', coupure '+events.cut.map(x=>x.toFixed(1)).join('/')+' s'
+      +refNote(mean(events.cut), REFC.cut, null).txt;
+    if(cutMax>2.5) return vATT(det+' — OVER-RUN : l’assistance persiste après l’arrêt du pédalage');
+    if(events.rise.length && mx(events.rise)>2.5) return vATT(det+' — montée lente de l’assistance');
+    return vOK(det); }},
+];
+
 function fmtT(sec){ sec=Math.max(0,Math.ceil(sec)); return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'); }
 function protoTotal(steps,from,elapsed){ let t=0; for(let i=from;i<steps.length;i++) t+=steps[i].dur; return t-(elapsed||0); }
 
@@ -1274,7 +1525,22 @@ function startProto(phase){
   /* Les deux phases pilotent le moteur par le MODE BANC : il doit donc etre
      ARME — et l'armement exige une confirmation PHYSIQUE sur le display, que
      rien ici ne peut contourner. */
-  if(!bench || !bench.engagedSeen){
+  /* PHASE C : assistance NORMALE, pas de mode banc — prerequis propres.
+     Chaque exigence est un constat des sessions precedentes : mode torque
+     (courant ∝ couple, lisible), street OFF (en mode normal il bride
+     REELLEMENT, contrairement au banc), niveau 0 (C0-C1 sans assistance),
+     banc desarme (il ecraserait les trames en mode 8), vitesse branchee
+     (E08 structurel sinon). */
+  if(phase==='C'){
+    if(bench){ alert('Désarmez le mode banc avant la phase C (elle tourne en assistance normale).'); return; }
+    const e0 = hist.length ? hist[hist.length-1].err : 0;
+    if(e0){ alert('Erreur mémorisée : '+errTxt(e0)+'\nCoupez l’alimentation (OFF/ON display), puis relancez.'); return; }
+    if(curMode!==1){ alert('Phase C : passez le mode d’assistance en TORQUE au menu display (actuel : '+(MODES[curMode]??'?')+').'); return; }
+    if(curStreet){ alert('Phase C : désactivez le STREET MODE — en mode normal il bride réellement les niveaux.'); return; }
+    if(curLvl!==0){ alert('Phase C : mettez le niveau d’assistance à 0 pour le départ (actuel : '+curLvl+').'); return; }
+    if(!ftmsCtrl && !confirm('Home trainer sans contrôle FTMS : la résistance devra être réglée à la main. Continuer ?')) return;
+  }
+  if(phase!=='C' && (!bench || !bench.engagedSeen)){
     /* ARMEMENT AUTOMATIQUE (demande atelier 2026-07-28) : plus besoin de
        passer par le panneau — le clic sur la phase envoie la demande, il ne
        reste que la confirmation PHYSIQUE (M puis ▲, garde-fou intouchable),
@@ -1305,14 +1571,14 @@ function startProto(phase){
     return;
   }
   if(phase==='B' && !trainerDev && !confirm('Home trainer non connecté : la résistance devra être réglée à la main. Continuer ?')) return;
-  const steps=phase==='A'?PROTO_A:PROTO_B;
+  const steps=phase==='A'?PROTO_A:phase==='C'?PROTO_C:PROTO_B;
   log=[]; recording=true; benchRec=true;
   $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
   proto={phase, steps, idx:-1, curId:null, state:'idle', t0:0, samples:[], results:[],
          baseVolt:null, plateaus:[], runStart:null, timer:setInterval(protoTick,250)};
   $('protoIdle').hidden=true; $('protoDone').hidden=true; $('protoRun').hidden=false;
-  $('pPhase').textContent = phase==='A'
-      ? 'PHASE A — moteur seul, chaîne déposée' : 'PHASE B — banc en charge';
+  $('pPhase').textContent = phase==='A' ? 'PHASE A — moteur seul, chaîne déposée'
+      : phase==='C' ? 'PHASE C — pédalage humain, assistance réelle' : 'PHASE B — banc en charge';
   nextStep();
 }
 
@@ -1438,6 +1704,11 @@ function protoTick(){
      rapporte (0x06, runtime en ticks de 100 ms) — c'est lui qui coupera.
      Repli local 300 s (2.18.6) si la trame manque. */
   let chip = st.res!=null ? 'résistance '+st.res+' %' : '';
+  // cibles en direct (phase C) : l'operateur se cale sans quitter l'ecran
+  if(st.target && p.state==='running'){
+    if(st.target.cad) chip += (chip?'  ·  ':'')+'cadence '+lastCad+' / '+st.target.cad+' rpm';
+    if(pmeca!=null) chip += '  ·  roue '+pmeca+' W';
+  }
   let left = null;
   if(benchAck && bench && bench.engagedSeen && Date.now()-benchAck.at < 3000 && benchAck.runtime)
     left = benchAck.runtime/10;
@@ -1517,6 +1788,7 @@ function endProto(aborted){
 
 $('btnProtoA').onclick=()=>startProto('A');
 $('btnProtoB').onclick=()=>startProto('B');
+$('btnProtoC').onclick=()=>startProto('C');
 $('btnProtoSkip').onclick=()=>{ if(proto){ proto.state='skipped'; nextStep(); } };
 $('btnProtoAbort').onclick=()=>{ if(proto) endProto(true); };
 $('btnProtoClose').onclick=()=>{ $('protoDone').hidden=true; $('protoIdle').hidden=false; };
