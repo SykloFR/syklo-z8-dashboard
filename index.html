@@ -1543,12 +1543,15 @@ const PROTO_C=[
     if(mx(peaks.map(q=>q.lat))>2.0) return vATT(det+' — montée lente sur pic');
     return vOK(det+' — réponse transitoire répétable'); }},
 
- {id:'C3',title:'Réactivité & décroissance',dur:30,res:100,target:{cad:70},
+ /* Raccourcie de 30 a 16 s (retour atelier 2026-07-29 : « trop longue ») :
+    2 cycles suffisent pour mesurer l'over-run — c'est LE resultat de cette
+    etape, mis en tete du verdict. */
+ {id:'C3',title:'Coupure & réactivité',dur:16,res:100,target:{cad:70},
   wait:{label:'Redescendez au niveau 3 (▼) et pédalez…',cond:d=>curLvl===3 && d.cad>40},
-  instr:"Niveau <b>3</b> : suivez le guide — PÉDALEZ quand c’est vert, <b>STOP NET</b> (pieds immobiles, sans appui) quand c’est rouge.",
-  prompt:el=>{ const ph=el%10;
-    return ph<6 ? {txt:'🚴 PÉDALEZ ~70 rpm ('+Math.ceil(6-ph)+' s)', urgent:false}
-                : {txt:'✋ STOP NET — pieds immobiles ('+Math.ceil(10-ph)+' s)', urgent:true}; },
+  instr:"Niveau <b>3</b> : suivez le guide — PÉDALEZ quand c’est vert, <b>STOP NET</b> (pieds immobiles, sans appui) quand c’est rouge. Mesure : l’<b>over-run</b> à la coupure.",
+  prompt:el=>{ const ph=el%8;
+    return ph<5 ? {txt:'🚴 PÉDALEZ ~70 rpm ('+Math.ceil(5-ph)+' s)', urgent:false}
+                : {txt:'✋ STOP NET — pieds immobiles ('+Math.ceil(8-ph)+' s)', urgent:true}; },
   check(ss){
     const events={rise:[], cut:[]};
     let pedaling=null, steady=0;
@@ -1567,13 +1570,14 @@ const PROTO_C=[
     proto.c3rise=events.rise; proto.c3cut=events.cut;
     if(!events.cut.length) return vATT('aucun arrêt net détecté — refaire les cycles');
     const cutMax=mx(events.cut);
-    let det='montée '+(events.rise.length?events.rise.map(x=>x.toFixed(1)).join('/')+' s':'?')
-      +refNote(events.rise.length?mean(events.rise):null, REFC.rise, null).txt
-      +', coupure '+events.cut.map(x=>x.toFixed(1)).join('/')+' s'
-      +refNote(mean(events.cut), REFC.cut, null).txt;
-    if(cutMax>2.5) return vATT(det+' — OVER-RUN : l’assistance persiste après l’arrêt du pédalage');
+    // l'OVER-RUN d'abord : c'est le resultat que cette etape existe pour donner
+    let det='OVER-RUN à la coupure : '+events.cut.map(x=>x.toFixed(1)+' s').join(' / ')
+      +refNote(mean(events.cut), REFC.cut, null).txt
+      +(events.rise.length?' · montée '+events.rise.map(x=>x.toFixed(1)).join('/')+' s'
+        +refNote(mean(events.rise), REFC.rise, null).txt:'');
+    if(cutMax>1.0) return vATT(det+' — l’assistance persiste après l’arrêt du pédalage (attendu < 1 s avec P12)');
     if(events.rise.length && mx(events.rise)>2.5) return vATT(det+' — montée lente de l’assistance');
-    return vOK(det); }},
+    return vOK(det+' — coupure nette'); }},
 ];
 
 function fmtT(sec){ sec=Math.max(0,Math.ceil(sec)); return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'); }

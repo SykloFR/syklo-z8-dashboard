@@ -278,7 +278,7 @@ while(ctx('proto') && guard++ < 600){
   else if(id==='C2p'){ simLvl=3; advance.c2p=(advance.c2p||0)+1;
     HUMAN.cad=60; HUMAN.delta=(advance.c2p%8<2)?150:25; }
   else if(id==='C3'){ simLvl=3; advance.c3=(advance.c3||0)+1;
-    if(advance.c3%20<12){ HUMAN.cad=70; HUMAN.delta=40; } else { HUMAN.cad=0; HUMAN.delta=5; } }
+    if(advance.c3%16<10){ HUMAN.cad=70; HUMAN.delta=40; } else { HUMAN.cad=0; HUMAN.delta=5; } }
   const ss=p.samples;
   if(ss && ss.length)
     ss[ss.length-1].pmeca = Math.round(HUMAN.delta*HUMAN.cad/18 + assistCur()*0.16*48*0.6);
