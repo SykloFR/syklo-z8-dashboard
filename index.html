@@ -1325,7 +1325,10 @@ const PROTO_C=[
     proto.baseVolt=mean(col(ss,'voltX10'));
     const c=mx(col(ss,'cur'));
     let det='offset '+m.toFixed(0)+refNote(m, REF.offset, null).txt+', courant '+A(c)+' A, batterie '+(proto.baseVolt/10).toFixed(1)+' V';
-    if(proto.baseVolt<475) det+=' — ⚠ batterie basse : run NON éligible comme référence (recharger à ~48,5 V)';
+    /* La tension est NOTEE (chaque JSONL la porte) : les metriques en
+       courant/ratios y sont peu sensibles. Seul un pack < 43 V deforme
+       vraiment (le sag des pics approche le cut-off 39 V). */
+    if(proto.baseVolt<430) det+=' — ⚠ batterie < 43 V : les pics seront déformés (sag vers le cut-off), recharger';
     if(c>6) return vKO(det+' — COURANT SANS PÉDALAGE : assistance fantôme, c’est déjà un diagnostic');
     if(errSeen(ss)) return vATT(det+' — erreur présente : '+errWhy(ss)+' (notée, on continue)');
     return vOK(det); }},
@@ -1350,23 +1353,30 @@ const PROTO_C=[
 
  {id:'C1b',title:'Profil couple — attaques départ arrêté',dur:20,res:100,
   wait:{label:'Laissez la roue (quasi) s’arrêter, puis 1re attaque debout…',cond:d=>d.delta>60},
-  instr:"<b>3 attaques DEBOUT</b> depuis roue quasi arrêtée, en laissant ralentir entre chaque — l’inertie du volant fait la charge. Amplitude et répétabilité du capteur.",
+  instr:"<b>3 attaques DEBOUT</b> depuis roue quasi arrêtée, en laissant ralentir entre chaque — l’inertie du volant fait la charge. On mesure le <b>maximum</b> et la <b>rapidité de montée</b> (la décroissance entre attaques est normale : fatigue).",
+  /* MAX + RAPIDITE DE MONTEE, pas de repetabilite : la decroissance des pics
+     entre attaques est de la fatigue humaine (160/127/110 sur capteur sain au
+     run 14-39), pas un defaut capteur — retour atelier 2026-07-29. */
   check(ss){
     (proto.c1all=proto.c1all||[]).push(...ss.filter(x=>x.cad>0||x.delta>30));
-    let peaks=[], lo=true, cur=0;
+    let peaks=[], lo=true, cur=0, t0=0, tPk=0;
     for(const x of ss){
-      if(x.delta>60){ lo=false; cur=Math.max(cur,x.delta); }
-      else if(!lo && x.delta<30){ peaks.push(cur); lo=true; cur=0; }
+      if(x.delta>60){
+        if(lo){ lo=false; t0=x.t; cur=0; }
+        if(x.delta>cur){ cur=x.delta; tPk=x.t; }
+      }
+      else if(!lo && x.delta<30){ peaks.push({d:cur, rise:(tPk-t0)/1000}); lo=true; }
     }
-    if(!lo && cur) peaks.push(cur);
-    proto.c1peaks=peaks;
-    if(peaks.length) proto.torqueLoadDelta=Math.max(proto.torqueLoadDelta||0, mx(peaks));
+    if(!lo && cur) peaks.push({d:cur, rise:(tPk-t0)/1000});
+    proto.c1peaks=peaks.map(q=>q.d);
+    if(peaks.length) proto.torqueLoadDelta=Math.max(proto.torqueLoadDelta||0, mx(peaks.map(q=>q.d)));
     if(!peaks.length) return vKO('aucune attaque vue (delta jamais > 60) — capteur amorphe ou attaques trop timides');
-    const spread=peaks.length>1 ? (mx(peaks)-mn(peaks))/mx(peaks) : 0;
-    let det=peaks.length+' attaque(s), delta pics '+peaks.map(x=>x.toFixed(0)).join(' / ');
-    if(peaks.length<3) return vATT(det+' — refaire 3 attaques pour juger la répétabilité');
-    if(spread>0.4) return vATT(det+' — amplitude irrégulière ('+(spread*100).toFixed(0)+' % d’écart) : capteur ou geste');
-    return vOK(det+' — amplitude répétable'); }},
+    const dmax=mx(peaks.map(q=>q.d));
+    const riseMin=mn(peaks.map(q=>q.rise));
+    let det=peaks.length+' attaque(s) : max '+dmax.toFixed(0)+refNote(dmax, REF.b1bDelta, null).txt
+      +', montée la plus rapide '+riseMin.toFixed(1)+' s (pics '+peaks.map(q=>q.d.toFixed(0)).join('/')+')';
+    if(dmax<80) return vATT(det+' — amplitude max faible : attaquer plus fort, ou capteur à surveiller');
+    return vOK(det); }},
 
  {id:'C1c',title:'Profil couple — cadence haute, force faible',dur:15,res:20,target:{cad:90},
   wait:{label:'Moulinez (~90 rpm), force légère…',cond:d=>d.cad>70},
@@ -1539,9 +1549,9 @@ const PROTO_C=[
     latence (montee du courant), repetabilite entre pics. C'est la signature
     attendue d'une assistance « par a-coups » type JL Doll : gains irreguliers,
     sur-oscillation apres le pic. Niveau 3 = courants moderes. */
- {id:'C2p',title:'Réponse aux pics de couple',dur:21,res:100,target:{cad:60},
+ {id:'C2p',title:'Réponse aux pics de couple',dur:14,res:100,target:{cad:60},
   wait:{label:'Redescendez au niveau 3 (▼) et pédalez léger…',cond:d=>curLvl===3 && d.cad>40},
-  instr:"Niveau <b>3</b> : suivez le guide — pédalage léger, et un <b>PIC</b> (appui violent 2 s, sans cesser de tourner) quand l’écran le demande.",
+  instr:"Niveau <b>3</b> : suivez le guide — pédalage léger, et <b>2 PICS</b> (appui violent 2 s, sans cesser de tourner) quand l’écran le demande. On mesure la réponse max et sa latence.",
   prompt:el=>{ const ph=el%7;
     return ph<5 ? {txt:'pédalage léger… pic dans '+Math.ceil(5-ph)+' s', urgent:false}
                 : {txt:'💥 PIC MAINTENANT — appuyez FORT', urgent:true}; },
@@ -1562,14 +1572,14 @@ const PROTO_C=[
     }
     if(inp) peaks.push({d:dmax, c:cmax, lat:(tCmax-t0)/1000});
     proto.c2peaks=peaks;
-    if(!peaks.length) return vATT('aucun pic détecté (seuil delta '+thr.toFixed(0)+') — 3 coups plus francs, sans arrêter de pédaler');
+    if(!peaks.length) return vATT('aucun pic détecté (seuil delta '+thr.toFixed(0)+') — coups plus francs, sans arrêter de pédaler');
+    /* MAX + LATENCE, sans exigence de repetabilite (fatigue humaine normale
+       entre pics — retour atelier 2026-07-29). 2 pics suffisent. */
     const det=peaks.length+' pic(s) : '+peaks.map(q=>'Δ'+q.d.toFixed(0)+'→'+A(q.c)+' A en '+q.lat.toFixed(1)+' s').join(' · ');
-    if(peaks.length<3) return vATT(det+' — viser 3 pics');
-    const gains=peaks.map(q=>q.d>0?q.c/q.d:0);
-    const spread=(mx(gains)-mn(gains))/Math.max(0.01,mx(gains));
-    if(spread>0.5) return vATT(det+' — gain irrégulier entre pics ('+(spread*100).toFixed(0)+' %) : assistance transitoire instable');
-    if(mx(peaks.map(q=>q.lat))>2.0) return vATT(det+' — montée lente sur pic');
-    return vOK(det+' — réponse transitoire répétable'); }},
+    if(peaks.length<2) return vATT(det+' — viser 2 pics');
+    const best=peaks.reduce((a,q)=>q.c>a.c?q:a, peaks[0]);
+    if(mn(peaks.map(q=>q.lat))>2.0) return vATT(det+' — montée lente sur pic');
+    return vOK(det+' — meilleure réponse : '+A(best.c)+' A en '+best.lat.toFixed(1)+' s'); }},
 
  /* Raccourcie de 30 a 16 s (retour atelier 2026-07-29 : « trop longue ») :
     2 cycles suffisent pour mesurer l'over-run — c'est LE resultat de cette
