@@ -149,6 +149,7 @@
     <div class="proto-head">
       <span id="pPhase" style="font-weight:700"></span>
       <span id="pRes" class="res-chip" hidden></span>
+      <span id="pCad" class="res-chip" hidden style="font-size:16px;font-weight:700"></span>
       <span class="proto-times">
         <span>étape <b id="pStepLeft">–</b></span>
         <span>total restant <b id="pTotLeft">–</b></span>
@@ -1317,6 +1318,7 @@ const PROTO_C=[
   instr:"Ne touchez à rien. Vérification des capteurs au repos et de l’absence d’assistance fantôme.",
   check(ss){ if(!ss.length) return vKO('aucune donnée');
     const m=mean(col(ss,'torque')); proto.torqueOffset=m;
+    proto.baseVolt=mean(col(ss,'voltX10'));
     const c=mx(col(ss,'cur'));
     const det='offset '+m.toFixed(0)+refNote(m, REF.offset, null).txt+', courant '+A(c)+' A';
     if(c>6) return vKO(det+' — COURANT SANS PÉDALAGE : assistance fantôme, c’est déjà un diagnostic');
@@ -1331,7 +1333,8 @@ const PROTO_C=[
     if(w.length<10) return vATT('pédalage trop court pour corréler — refaire');
     const r=pearson(w.map(x=>x.delta), w.map(x=>x.pmeca||0));
     const dm=w.map(x=>x.delta).sort((a,b)=>a-b)[Math.floor(w.length/2)];
-    proto.c1corr=r; proto.c1delta=dm;
+    proto.c1corr=r; proto.c1delta=dm; proto.torqueLowDelta=dm;
+    proto.cadPct=Math.max(proto.cadPct||0, Math.round(w.length/ss.length*100));
     let det='delta médian '+dm+refNote(dm, REFC.c1delta, null).txt
       +(r!=null?', corrélation couple↔roue r='+r.toFixed(2)+refNote(r, REFC.c1corr, null).txt:' (Proue absente : connectez le trainer)');
     if(dm<8) return vKO(det+' — le capteur ne voit pas un effort modéré (zone morte ?)');
@@ -1349,6 +1352,7 @@ const PROTO_C=[
     }
     if(!lo && cur) peaks.push(cur);
     proto.c1peaks=peaks;
+    if(peaks.length) proto.torqueLoadDelta=Math.max(proto.torqueLoadDelta||0, mx(peaks));
     if(!peaks.length) return vKO('aucune attaque vue (delta jamais > 60) — capteur amorphe ou attaques trop timides');
     const spread=peaks.length>1 ? (mx(peaks)-mn(peaks))/mx(peaks) : 0;
     let det=peaks.length+' attaque(s), delta pics '+peaks.map(x=>x.toFixed(0)).join(' / ');
@@ -1380,7 +1384,7 @@ const PROTO_C=[
 
  {id:'C2L1',title:'Assistance niveau 1',dur:18,res:100,target:{cad:70},
   wait:{label:'Passez au niveau 1 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===1 && d.cad>40},
-  instr:"Niveau <b>1</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  instr:"Niveau <b>1</b>, pédalage <b>CONTINU et régulier</b> ~70 rpm — pas d’à-coups, les pics ont leur étape dédiée juste après. Ratio assistance/effort, maintien, à-coups.",
   check(ss){
     const w=ss.filter(x=>x.cad>40);
     if(w.length<10) return vATT('pédalage pas tenu au niveau 1');
@@ -1400,7 +1404,7 @@ const PROTO_C=[
     return vOK(det); }},
  {id:'C2L2',title:'Assistance niveau 2',dur:18,res:100,target:{cad:70},
   wait:{label:'Passez au niveau 2 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===2 && d.cad>40},
-  instr:"Niveau <b>2</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  instr:"Niveau <b>2</b>, pédalage <b>CONTINU et régulier</b> ~70 rpm — pas d’à-coups, les pics ont leur étape dédiée juste après. Ratio assistance/effort, maintien, à-coups.",
   check(ss){
     const w=ss.filter(x=>x.cad>40);
     if(w.length<10) return vATT('pédalage pas tenu au niveau 2');
@@ -1420,7 +1424,7 @@ const PROTO_C=[
     return vOK(det); }},
  {id:'C2L3',title:'Assistance niveau 3',dur:18,res:100,target:{cad:70},
   wait:{label:'Passez au niveau 3 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===3 && d.cad>40},
-  instr:"Niveau <b>3</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  instr:"Niveau <b>3</b>, pédalage <b>CONTINU et régulier</b> ~70 rpm — pas d’à-coups, les pics ont leur étape dédiée juste après. Ratio assistance/effort, maintien, à-coups.",
   check(ss){
     const w=ss.filter(x=>x.cad>40);
     if(w.length<10) return vATT('pédalage pas tenu au niveau 3');
@@ -1440,7 +1444,7 @@ const PROTO_C=[
     return vOK(det); }},
  {id:'C2L4',title:'Assistance niveau 4',dur:18,res:100,target:{cad:70},
   wait:{label:'Passez au niveau 4 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===4 && d.cad>40},
-  instr:"Niveau <b>4</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  instr:"Niveau <b>4</b>, pédalage <b>CONTINU et régulier</b> ~70 rpm — pas d’à-coups, les pics ont leur étape dédiée juste après. Ratio assistance/effort, maintien, à-coups.",
   check(ss){
     const w=ss.filter(x=>x.cad>40);
     if(w.length<10) return vATT('pédalage pas tenu au niveau 4');
@@ -1460,7 +1464,7 @@ const PROTO_C=[
     return vOK(det); }},
  {id:'C2L5',title:'Assistance niveau 5',dur:18,res:100,target:{cad:70},
   wait:{label:'Passez au niveau 5 au display (▲) et pédalez ~70 rpm…',cond:d=>curLvl===5 && d.cad>40},
-  instr:"Niveau <b>5</b>, cadence régulière ~70 rpm, résistance 100 %. Ratio assistance/effort, maintien, à-coups.",
+  instr:"Niveau <b>5</b>, pédalage <b>CONTINU et régulier</b> ~70 rpm — pas d’à-coups, les pics ont leur étape dédiée juste après. Ratio assistance/effort, maintien, à-coups.",
   check(ss){
     const w=ss.filter(x=>x.cad>40);
     if(w.length<10) return vATT('pédalage pas tenu au niveau 5');
@@ -1469,6 +1473,21 @@ const PROTO_C=[
     const ratio=drive>100 ? cm/drive*1000 : null;
     const jk=jerkIndex(w);
     (proto.lvlStats=proto.lvlStats||[]).push({lvl:5, cur:cm, ratio, jerk:jk});
+    /* SYNTHESE CAPTEURS (diag complet a chaque run C, demande 2026-07-29) :
+       la fenetre L5 est la plus chargee et la plus rapide — Hall, vitesse
+       roue, FOC en charge et sag batterie s'y lisent au mieux. */
+    const halls=new Set(col(w,'hall'));
+    proto.hallCount=Math.max(proto.hallCount||0, halls.size);
+    const sp=w.filter(x=>x.erps>50);
+    const seen=sp.length ? sp.filter(x=>x.spdX10>0).length/sp.length : 0;
+    proto.speedSeen = seen>0.5;
+    if(proto.speedSeen){
+      const rr=sp.filter(x=>x.spdX10>0).map(x=>(x.spdX10/10)/x.erps);
+      proto.speedRatio=mean(rr);
+    }
+    const hiC=w.filter(x=>x.cur>40);
+    if(hiC.length) proto.focLoad=mean(col(hiC,'foc'));
+    if(proto.baseVolt) proto.sagMax=proto.baseVolt-mn(col(w,'voltX10'));
     // maintien : l'assistance ne doit pas s'evanouir pendant le palier
     const h=Math.floor(w.length/2);
     const sustain=mean(col(w.slice(0,h),'cur'))>8 ? mean(col(w.slice(h),'cur'))/mean(col(w.slice(0,h),'cur')) : 1;
@@ -1486,6 +1505,39 @@ const PROTO_C=[
       if(!mono) return vATT(det+' — la progression des niveaux ne suit pas la loi attendue');
     }
     return vOK(det); }},
+
+ /* REPONSE AUX PICS (demande atelier 2026-07-29) : etape dediee, separee du
+    continu — melanger les deux polluait le ratio et l'indice d'a-coups. Trois
+    pics francs SANS arreter de pedaler : gain (courant creye / delta pic),
+    latence (montee du courant), repetabilite entre pics. C'est la signature
+    attendue d'une assistance « par a-coups » type JL Doll : gains irreguliers,
+    sur-oscillation apres le pic. Niveau 3 = courants moderes. */
+ {id:'C2p',title:'Réponse aux pics de couple',dur:20,res:100,target:{cad:60},
+  wait:{label:'Redescendez au niveau 3 (▼) et pédalez léger…',cond:d=>curLvl===3 && d.cad>40},
+  instr:"Niveau <b>3</b> : pédalage léger continu, puis <b>3 pics de puissance francs</b> espacés de ~4 s — <b>sans arrêter de pédaler</b> entre les pics.",
+  check(ss){ const g=errGate(ss); if(g) return g;
+    const base=ss.length?ss.map(x=>x.delta).sort((a,b)=>a-b)[Math.floor(ss.length/2)]:0;
+    const thr=Math.max(60, base*2);
+    const peaks=[]; let inp=false, dmax=0, cmax=0, t0=0, tCmax=0;
+    for(const x of ss){
+      if(x.delta>thr){
+        if(!inp){ inp=true; t0=x.t; dmax=0; cmax=0; tCmax=x.t; }
+        dmax=Math.max(dmax,x.delta);
+        if(x.cur>cmax){ cmax=x.cur; tCmax=x.t; }
+      } else if(inp && x.delta<thr*0.6){
+        peaks.push({d:dmax, c:cmax, lat:(tCmax-t0)/1000}); inp=false;
+      } else if(inp && x.cur>cmax){ cmax=x.cur; tCmax=x.t; }
+    }
+    if(inp) peaks.push({d:dmax, c:cmax, lat:(tCmax-t0)/1000});
+    proto.c2peaks=peaks;
+    if(!peaks.length) return vATT('aucun pic détecté (seuil delta '+thr.toFixed(0)+') — 3 coups plus francs, sans arrêter de pédaler');
+    const det=peaks.length+' pic(s) : '+peaks.map(q=>'Δ'+q.d.toFixed(0)+'→'+A(q.c)+' A en '+q.lat.toFixed(1)+' s').join(' · ');
+    if(peaks.length<3) return vATT(det+' — viser 3 pics');
+    const gains=peaks.map(q=>q.d>0?q.c/q.d:0);
+    const spread=(mx(gains)-mn(gains))/Math.max(0.01,mx(gains));
+    if(spread>0.5) return vATT(det+' — gain irrégulier entre pics ('+(spread*100).toFixed(0)+' %) : assistance transitoire instable');
+    if(mx(peaks.map(q=>q.lat))>2.0) return vATT(det+' — montée lente sur pic');
+    return vOK(det+' — réponse transitoire répétable'); }},
 
  {id:'C3',title:'Réactivité & décroissance',dur:30,res:100,target:{cad:70},
   wait:{label:'Redescendez au niveau 3 (▼) et pédalez…',cond:d=>curLvl===3 && d.cad>40},
@@ -1704,11 +1756,17 @@ function protoTick(){
      rapporte (0x06, runtime en ticks de 100 ms) — c'est lui qui coupera.
      Repli local 300 s (2.18.6) si la trame manque. */
   let chip = st.res!=null ? 'résistance '+st.res+' %' : '';
-  // cibles en direct (phase C) : l'operateur se cale sans quitter l'ecran
-  if(st.target && p.state==='running'){
-    if(st.target.cad) chip += (chip?'  ·  ':'')+'cadence '+lastCad+' / '+st.target.cad+' rpm';
-    if(pmeca!=null) chip += '  ·  roue '+pmeca+' W';
-  }
+  // cibles en direct (phase C) : badge cadence COLORE — vert dans ±15 % de la
+  // cible, orange dans ±30 %, rouge au-dela (demande atelier 2026-07-29)
+  const cadBadge=$('pCad');
+  if(st.target && st.target.cad && (p.state==='running'||p.state==='settling')){
+    const dev=Math.abs(lastCad-st.target.cad)/st.target.cad;
+    cadBadge.hidden=false;
+    cadBadge.textContent=lastCad+' rpm → '+st.target.cad;
+    cadBadge.style.background = dev<=0.15 ? '#1e6b3f' : dev<=0.30 ? '#7a5c12' : '#7a1f1c';
+    cadBadge.style.color='#fff';
+    if(pmeca!=null) chip += (chip?'  ·  ':'')+'roue '+pmeca+' W';
+  } else cadBadge.hidden=true;
   let left = null;
   if(benchAck && bench && bench.engagedSeen && Date.now()-benchAck.at < 3000 && benchAck.runtime)
     left = benchAck.runtime/10;

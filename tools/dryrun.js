@@ -275,6 +275,8 @@ while(ctx('proto') && guard++ < 600){
   else if(id==='C1c'){ HUMAN.cad=90; HUMAN.delta=18; }
   else if(id==='C1d'){ HUMAN.cad=0; HUMAN.delta=0; }
   else if(id && id.startsWith('C2L')){ simLvl=+id.slice(3); HUMAN.cad=70; HUMAN.delta=40; }
+  else if(id==='C2p'){ simLvl=3; advance.c2p=(advance.c2p||0)+1;
+    HUMAN.cad=60; HUMAN.delta=(advance.c2p%8<2)?150:25; }
   else if(id==='C3'){ simLvl=3; advance.c3=(advance.c3||0)+1;
     if(advance.c3%20<12){ HUMAN.cad=70; HUMAN.delta=40; } else { HUMAN.cad=0; HUMAN.delta=5; } }
   const ss=p.samples;
