@@ -76,10 +76,38 @@ Un garde-fou ignore les valeurs hors [0, 3000] W (trames partielles au démarrag
 
 ## Format JSONL
 
-`{t, seq, torque, delta, cad, duty, erps, foc, cur, voltX10, err, hall, spdX10, pow, pmeca}`
+`{t, seq, torque, delta, cad, duty, erps, foc, cur, voltX10, err, hall, spdX10, pow, pmeca, src}`
 (t = epoch ms ; valeurs brutes firmware, tension = voltX10/10 V,
 vitesse = spdX10/10 km/h ; `pow` = puissance batterie W, `pmeca` = puissance roue W,
-`null` si le trainer n'est pas connecté.)
+`null` si le trainer n'est pas connecté ; `src` = octet 19 du 0x04, `null` si
+display < 2.18.10 — voir section suivante.)
+
+## Moteur en firmware STOCK Tongsheng (display ≥ 2.18.10)
+
+Un moteur resté en firmware stock (TSDZ8/RD45) remonte quand même une télémétrie
+exploitable : l'octet 19 du 0x04 (nouveau) déclare la source — bits 0-3 =
+protocole **détecté** par le display (0 aucun, 1 OSF/mbrusa, 2 stock Tongsheng),
+bits 4-7 = motor_version configuré. Recopié dans chaque ligne JSONL (`src`).
+
+En stock, le display remplit le 0x04 depuis la trame native 9 octets :
+
+| Champ | En stock |
+|---|---|
+| `torque` | **signal couple brut Tongsheng** (octet 3 de la trame) — échelle et offset ≠ ADC OSF (le repère « vide 120-250 » ne s'applique pas) |
+| `cur` | courant batterie, **converti à la même unité que l'OSF** (0,16 A/LSB → ×0,16 = A, formules inchangées) |
+| `voltX10`, `spdX10` | valides (tension = ADC display, vitesse = ticks stock) |
+| `err` | **CODE d'erreur stock Tongsheng** — PAS le bitfield OSF, ne pas décoder err02…err08 |
+| `delta`, `cad`, `duty`, `erps`, `foc`, `hall` | **absents de la trame stock** → 0 (« n/a » à l'écran) |
+
+`pow` (0x02) et `pmeca` (trainer) restent disponibles.
+
+Le dashboard affiche « STOCK — télémétrie réduite » et **bloque les phases
+guidées A/B/C et le mode banc** : le mode banc pilote le moteur par la trame TX
+OSF (mode 8 + duty) qu'un moteur stock ignore — le display 2.18.10 refuse
+d'ailleurs l'armement hors OSF. Évaluer un moteur stock = **run libre
+● Enregistrer** (pédalage réel ou sur trainer) : couple brut, courant, tension,
+vitesse, erreurs. Comparaison **entre moteurs stock uniquement**, jamais aux
+références REF/REFC (établies sous OSF).
 
 ## Version mobile (sortie route)
 

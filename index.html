@@ -88,7 +88,8 @@
 
 <h2>Données live (paquet 0x04 @5 Hz)</h2>
 <div class="grid">
-  <div class="tile"><div class="l">ADC torque</div><div class="v" id="vTorque">–</div><div class="u">brut (vide 120–250)</div></div>
+  <div class="tile" id="srcTile"><div class="l">Firmware moteur</div><div class="v" id="vSrc">–</div><div class="u" id="vSrcU">protocole détecté (octet 19)</div></div>
+  <div class="tile"><div class="l">ADC torque</div><div class="v" id="vTorque">–</div><div class="u" id="vTorqueU">brut (vide 120–250)</div></div>
   <div class="tile"><div class="l">Torque delta</div><div class="v" id="vDelta">–</div><div class="u">ADC</div></div>
   <div class="tile"><div class="l">Cadence</div><div class="v" id="vCad">–</div><div class="u">rpm</div></div>
   <div class="tile"><div class="l">Duty cycle</div><div class="v" id="vDuty">–</div><div class="u">% (remonté moteur)</div></div>
@@ -322,6 +323,19 @@ const errTxt  = e => errList(e).map(b => b.code+' '+b.lbl).join(' · ');
 
 // niveau d'assist + mode : lus du paquet SykloConnect 0x01 (déjà émis, +1 encodé)
 let curLvl = null, curMode = null;
+
+/* Octet 19 du 0x04 (display >= 2.18.10) : SOURCE de la télémétrie.
+   bits 0-3 = protocole moteur DÉTECTÉ par le display (0 aucun, 1 OSF/mbrusa
+   19200, 2 stock Tongsheng 9600) ; bits 4-7 = motor_version configuré.
+   En STOCK, le firmware remplit le 0x04 depuis la trame native 9 octets :
+   torque = signal couple brut Tongsheng (échelle ≠ ADC OSF, offset ≠ 120-250),
+   cur = courant converti à la même unité (0,16 A/LSB), tension/vitesse/erreurs
+   valides — delta, cadence, duty, ERPS, FOC et hall N'EXISTENT PAS (zéros).
+   err y est le CODE stock Tongsheng, pas le bitfield OSF. */
+let motorSrc = null;                 // dernier octet 19 reçu (null = display < 2.18.10)
+const srcProto = () => motorSrc == null ? null : (motorSrc & 0x0f);
+const isStock  = () => srcProto() === 2;
+
 function decode04(dv) {
   return { seq:dv.getUint8(1), torque:dv.getUint16(2,true), delta:dv.getUint16(4,true),
     // duty : le moteur le remonte deja converti en % 0-100 (ebike_app.c,
@@ -329,7 +343,18 @@ function decode04(dv) {
     // le comparer a la consigne 0-254 sans conversion.
     cad:dv.getUint8(6), duty:dv.getUint8(7), erps:dv.getUint16(8,true), foc:dv.getUint8(10),
     cur:dv.getUint16(11,true), voltX10:dv.getUint16(13,true), err:dv.getUint8(15),
-    hall:dv.getUint8(16), spdX10:dv.getUint16(17,true) };
+    hall:dv.getUint8(16), spdX10:dv.getUint16(17,true),
+    src: dv.byteLength >= 20 ? dv.getUint8(19) : null };
+}
+
+function renderSrc(){
+  const p = srcProto();
+  $('vSrc').textContent = p == null ? '–' : (p === 1 ? 'OSF' : p === 2 ? 'STOCK' : 'aucun');
+  $('vSrcU').textContent = motorSrc == null ? 'octet 19 absent (display < 2.18.10)'
+    : ((MOTORS[motorSrc >> 4] ?? '?') + (p === 2 ? ' — télémétrie réduite'
+        : p === 0 ? ' — moteur non détecté' : ''));
+  $('srcTile').classList.toggle('bad', p === 0);
+  $('vTorqueU').textContent = p === 2 ? 'signal stock (échelle ≠ OSF)' : 'brut (vide 120–250)';
 }
 
 function onNotify(ev) {
@@ -430,14 +455,18 @@ function handle04(dv) {
   pkts++;
   if (lastSeq !== null) { const g = (d.seq - lastSeq + 256) % 256; if (g > 1) lost += g - 1; }
   lastSeq = d.seq;
-  $('vTorque').textContent=d.torque; $('vDelta').textContent=d.delta;
-  $('vCad').textContent=d.cad; $('vDuty').textContent=d.duty;
-  $('vErps').textContent=d.erps; $('vFoc').textContent=d.foc;
+  if (d.src !== motorSrc) { motorSrc = d.src; renderSrc(); }
+  const na = isStock();     // stock Tongsheng : champs OSF absents de la trame
+  $('vTorque').textContent=d.torque; $('vDelta').textContent=na?'n/a':d.delta;
+  $('vCad').textContent=na?'n/a':d.cad; $('vDuty').textContent=na?'n/a':d.duty;
+  $('vErps').textContent=na?'n/a':d.erps; $('vFoc').textContent=na?'n/a':d.foc;
   $('vCur').textContent=d.cur; $('vVolt').textContent=(d.voltX10/10).toFixed(1);
-  $('vSpeed').textContent=(d.spdX10/10).toFixed(1); $('vHall').textContent=d.hall;
+  $('vSpeed').textContent=(d.spdX10/10).toFixed(1); $('vHall').textContent=na?'n/a':d.hall;
   $('vPkts').textContent=pkts; $('vLost').textContent=lost;
-  $('vErr').textContent = d.err ? errList(d.err).map(b=>b.code).join(' ') || '0x'+d.err.toString(16) : 'OK';
-  $('vErrBits').textContent = d.err ? errTxt(d.err) : '';
+  // en stock, err est le CODE d'erreur Tongsheng, pas le bitfield OSF
+  $('vErr').textContent = d.err ? (na ? 'code '+d.err
+      : errList(d.err).map(b=>b.code).join(' ') || '0x'+d.err.toString(16)) : 'OK';
+  $('vErrBits').textContent = d.err ? (na ? 'code stock Tongsheng (≠ bitfield OSF)' : errTxt(d.err)) : '';
   $('errTile').classList.toggle('bad', !!d.err);
   lastCad = d.cad;
   hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps, err:d.err, pmeca:pmeca??0});
@@ -1623,6 +1652,18 @@ function protoTotal(steps,from,elapsed){ let t=0; for(let i=from;i<steps.length;
 
 function startProto(phase){
   if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
+  /* STOCK Tongsheng : pas de mode banc (le moteur ignore la consigne de duty,
+     le display refuse d'ailleurs l'armement) et pas de delta/cadence/duty —
+     toutes les métriques des phases guidées seraient du vide. On évalue un
+     moteur stock avec ● Enregistrer : couple brut, courant, tension, vitesse,
+     erreurs (+ puissance roue si trainer connecté). */
+  if(isStock()){
+    alert('Firmware moteur STOCK Tongsheng détecté.\n\n'
+      +'Les phases guidées exigent le firmware OSF (mode banc piloté + delta/cadence/duty).\n\n'
+      +'→ Utilisez ● Enregistrer pour un run libre : couple brut, courant, tension, '
+      +'vitesse, erreurs — comparables entre moteurs stock, pas à la référence OSF.');
+    return;
+  }
   /* Les deux phases pilotent le moteur par le MODE BANC : il doit donc etre
      ARME — et l'armement exige une confirmation PHYSIQUE sur le display, que
      rien ici ne peut contourner. */
@@ -2078,6 +2119,8 @@ async function benchTick(){
 
 function benchArm(){
   if(!nusRx){ alert('Connectez d’abord le SW102.'); return; }
+  if(isStock()){ alert('Firmware moteur STOCK Tongsheng : le mode banc exige le firmware OSF '
+    +'(le moteur ignore la consigne de duty, le display refuse l’armement).'); return; }
   /* Toute erreur mémorisée — E08 COMPRIS — met la cible de duty à 0 côté moteur
      (ebike_app.c, « reset control parameters if… ») sauf si assist-with-error est
      actif. Armer dans cet état donnerait un mode banc qui ne fait rien tourner,
@@ -2112,6 +2155,8 @@ function benchArm(){
    blocs. Le garde-fou reste entier — cette trame ne fait qu'AFFICHER l'ecran de
    confirmation, c'est toujours l'operateur qui arme physiquement (M puis ▲). */
 function benchArmRequest(loaded){
+  // stock Tongsheng : le display refuse l'armement (2.18.10) — inutile d'insister
+  if(isStock()){ benchUi('⚠ moteur stock : mode banc indisponible (OSF requis)'); return; }
   bench = {loaded, targetD:0, sentD:0, running:false, fails:0, lastOk:0, busy:false,
            engagedSeen:false, t0:Date.now(), timer:setInterval(benchTick, BENCH_TICK)};
   benchAck = null;
