@@ -150,6 +150,10 @@
   <div class="tile" id="aweTile"><div class="l">Assist w/ error</div><div class="v" id="vAwe">–</div><div class="u">🔴 à couper avant la route</div></div>
   <div class="tile" id="streetTile"><div class="l">Street mode</div><div class="v" id="vStreet">–</div><div class="u" id="vStreetLim"></div></div>
   <div class="tile"><div class="l">Vitesse roue</div><div class="v" id="vSpeed">–</div><div class="u">km/h</div></div>
+  <div class="tile" id="rawTile"><div class="l">Vitesse brute (stock)</div><div class="v" id="vSpdRaw">–</div><div class="u" id="vSpdRawU">km/h avant filtre RD45</div></div>
+  <div class="tile"><div class="l">Période roue brute</div><div class="v" id="vTickRaw">–</div><div class="u">ticks de 2,04 ms (avant clamp)</div></div>
+  <div class="tile" id="uartTile"><div class="l">Trames 0x43</div><div class="v" id="vUart">–</div><div class="u">ok / somme KO / err UART (roulants)</div></div>
+  <div class="tile"><div class="l">Trame 0x46</div><div class="v" id="vF46" style="font-size:12px;word-break:break-all">–</div><div class="u" id="vF46U">brute (paquet 0x08)</div></div>
   <div class="tile"><div class="l">Niveau assist</div><div class="v" id="vLvl">–</div><div class="u" id="vMode"></div></div>
   <div class="tile"><div class="l">Hall</div><div class="v" id="vHall">–</div><div class="u">état 1–6</div></div>
   <div class="tile" id="errTile"><div class="l">Erreurs</div><div class="v" id="vErr">–</div><div class="u" id="vErrBits"></div></div>
@@ -383,7 +387,7 @@ let motorSrc = null;                 // dernier octet 19 reçu (null = display <
 const srcProto = () => motorSrc == null ? null : (motorSrc & 0x0f);
 const isStock  = () => srcProto() === 2;
 
-function decode04(dv) {
+function decode04raw(dv) {
   return { seq:dv.getUint8(1), torque:dv.getUint16(2,true), delta:dv.getUint16(4,true),
     // duty : le moteur le remonte deja converti en % 0-100 (ebike_app.c,
     // octet 15 de la reponse : "convert duty-cycle to 0 - 100 %") — ne JAMAIS
@@ -393,6 +397,20 @@ function decode04(dv) {
     hall:dv.getUint8(16), spdX10:dv.getUint16(17,true),
     src: dv.byteLength >= 20 ? dv.getUint8(19) : null };
 }
+// STOCK Tongsheng (display >= 2.18.10-rd45log) : les offsets sans objet en stock sont
+// SURCHARGÉS — 4-5 tick brut (période roue, LSB 2,04 ms, AVANT clamp 1750), 6 trames 0x43
+// somme OK (roulant), 7 somme KO, 8-9 vitesse brute x10 AVANT filtre RD45, 10 erreurs UART.
+// En stock, torque = couple brut de la trame 0x43 et cur = courant en unités de 0,2 A
+// (0 sur les builds antérieurs). Les clés OSF correspondantes sont retirées de l'échantillon
+// pour ne pas polluer le JSONL avec des valeurs qui ne sont pas ce que leur nom dit.
+function decode04(dv) {
+  const d = decode04raw(dv);
+  if (d.src != null && (d.src & 0x0f) === 2) {
+    d.tickRaw = d.delta; d.frOk = d.cad; d.ckErr = d.duty; d.spdRawX10 = d.erps; d.commErr = d.foc;
+    delete d.delta; delete d.cad; delete d.duty; delete d.erps; delete d.foc; delete d.hall;
+  }
+  return d;
+}
 
 function renderSrc(){
   const p = srcProto();
@@ -401,7 +419,8 @@ function renderSrc(){
     : ((MOTORS[motorSrc >> 4] ?? '?') + (p === 2 ? ' — télémétrie réduite'
         : p === 0 ? ' — moteur non détecté' : ''));
   $('srcTile').classList.toggle('bad', p === 0);
-  $('vTorqueU').textContent = p === 2 ? 'signal stock (échelle ≠ OSF)' : 'brut (vide 120–250)';
+  $('vTorqueU').textContent = p === 2 ? 'couple brut trame 0x43 (stock)' : 'brut (vide 120–250)';
+  $('vCur') && ($('vCur').nextElementSibling.textContent = p === 2 ? '×0,2 A (stock, display ≥ 2.18.10)' : 'ADC brut');
 }
 
 function onNotify(ev) {
@@ -520,6 +539,14 @@ function handle04(dv) {
   $('vErps').textContent=na?'n/a':d.erps; $('vFoc').textContent=na?'n/a':d.foc;
   $('vCur').textContent=d.cur; $('vVolt').textContent=(d.voltX10/10).toFixed(1);
   $('vSpeed').textContent=(d.spdX10/10).toFixed(1); $('vHall').textContent=na?'n/a':d.hall;
+  if (na && d.tickRaw !== undefined) {
+    $('vSpdRaw').textContent=(d.spdRawX10/10).toFixed(1);
+    $('vSpdRawU').textContent='km/h avant filtre — affichée '+(d.spdX10/10).toFixed(1)+(d.spdRawX10&&d.spdX10?' ('+(100*d.spdRawX10/d.spdX10-100).toFixed(0)+' %)':'');
+    $('vTickRaw').textContent=d.tickRaw; $('vUart').textContent=d.frOk+' / '+d.ckErr+' / '+d.commErr;
+    $('uartTile').classList.toggle('bad', d.ckErr>0 || d.commErr>0);
+  } else { $('vSpdRaw').textContent='n/a'; $('vTickRaw').textContent='n/a'; $('vUart').textContent='n/a'; }
+  $('vF46').textContent = lastF46 ? lastF46.hex.replace(/(..)/g,'$1 ').trim() : '–';
+  $('vF46U').textContent = lastF46 ? 'âge '+(lastF46.age===255?'∞':(lastF46.age/10).toFixed(1)+' s')+' · n='+lastF46.n : 'brute (paquet 0x08)';
   $('vPkts').textContent=pkts; $('vLost').textContent=lost;
   // en stock, err est le CODE d'erreur Tongsheng, pas le bitfield OSF
   $('vErr').textContent = d.err ? (na ? 'code '+d.err
