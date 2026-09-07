@@ -54,6 +54,18 @@
   #benchAlive.bad .v { color:var(--err); }
   select { background:#2a3340; color:var(--tx); border:0; border-radius:6px; padding:7px 10px; font:inherit; }
   #status { color:var(--dim); }
+  /* --- archivage GitHub (syklo-logs) --- */
+  details.arc { background:var(--card); border-radius:8px; padding:10px 14px; margin-bottom:14px; }
+  details.arc summary { cursor:pointer; font-weight:600; }
+  details.arc summary .st { color:var(--dim); font-weight:400; font-size:12px; margin-left:8px; }
+  .arc-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:8px 14px; margin-top:10px; }
+  .arc-grid label { display:flex; flex-direction:column; gap:3px; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  .arc-grid input, .arc-grid select { background:#2a3340; color:var(--tx); border:0; border-radius:6px; padding:7px 10px; font:14px system-ui,sans-serif; text-transform:none; letter-spacing:0; }
+  .arc-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .arc-row input { flex:1; min-width:200px; background:#2a3340; color:var(--tx); border:0; border-radius:6px; padding:7px 10px; font:14px system-ui,sans-serif; }
+  #arcStatus { color:var(--dim); font-size:12px; }
+  #arcStatus.ok { color:var(--ok); } #arcStatus.bad { color:var(--err); }
+  .arc .hint { color:var(--dim); font-size:12px; margin-top:6px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
   .tile { background:var(--card); border-radius:8px; padding:10px 12px; }
   .tile .l { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
@@ -85,6 +97,41 @@
   <button id="btnStats" class="sec" disabled>Copier stats</button>
   <span id="recInfo" style="color:var(--dim)"></span>
 </div>
+
+<details class="arc" id="arcPanel">
+  <summary>Archivage GitHub — <span id="arcSumId">(identifiant non renseigné)</span><span class="st" id="arcSumSt"></span></summary>
+  <div class="arc-grid">
+    <label>Identifiant vélo / moteur<input id="arcId" placeholder="RD45-TS85-VELO-YANNI" autocapitalize="characters"></label>
+    <label>Type moteur<select id="arcType">
+      <option value="RD45-TS85">RD45 — AKM85TS (axe plein)</option>
+      <option value="RD45-TTS85">RD45 — AKM85TTS (axe traversant)</option>
+      <option value="Z8-48V">TSDZ8 48 V stock</option>
+      <option value="Z8-36V">TSDZ8 36 V stock</option>
+      <option value="Z8-OSF-48V">TSDZ8 48 V OSF</option>
+      <option value="Z8-OSF-36V">TSDZ8 36 V OSF</option>
+      <option value="Z2">TSDZ2</option>
+      <option value="AUTRE">Autre</option>
+    </select></label>
+    <label>Firmware moteur (déclaré)<input id="arcFw" placeholder="virvolt V1.0.1 / Syklo V1.0.0"></label>
+    <label>Contexte<select id="arcCtx">
+      <option value="route">Route (roulage)</option>
+      <option value="banc">Banc</option>
+      <option value="sav">SAV (diagnostic client)</option>
+    </select></label>
+    <label>Note<input id="arcNote" placeholder="descente D12, 30-40 km/h"></label>
+  </div>
+  <div class="arc-row">
+    <input id="arcTok" type="password" placeholder="Jeton GitHub (fine-grained, dépôt syklo-logs, Contents RW)" autocomplete="off">
+    <button id="btnArcTok" class="sec">Enregistrer le jeton</button>
+    <button id="btnArcTest" class="sec">Tester</button>
+    <button id="btnArcFlush" class="sec" disabled>Renvoyer la file (0)</button>
+    <span id="arcStatus"></span>
+  </div>
+  <div class="hint">À chaque <b>Stop</b>, le JSONL est déposé dans <code>SykloFR/syklo-logs</code> sous
+    <code>logs/&lt;identifiant&gt;/&lt;date&gt;/</code> avec une ligne <code>meta</code> (identifiant, type, firmware, contexte,
+    preset display, protocole détecté, horodatage). Hors ligne ou jeton absent : le fichier est mis en file d'attente
+    (renvoyé au prochain clic) et téléchargé localement. Le jeton reste dans ce navigateur, jamais dans la page.</div>
+</details>
 
 <h2>Données live (paquet 0x04 @5 Hz)</h2>
 <div class="grid">
@@ -366,6 +413,7 @@ function onNotify(ev) {
   if (h === 0x01 && dv.byteLength >= 18) return handle01(dv);
   if (h === 0x02 && dv.byteLength >= 12) return handle02(dv);
   if (h === 0x06 && dv.byteLength >= 8)  return handle06(dv);
+  if (h === 0x08 && dv.byteLength >= 19) return handle08(dv);
   // header 3 = trip SykloConnect, ignoré
 }
 
@@ -448,6 +496,16 @@ function handle06(dv) {
 
 let lastCad = 0;   // derniere cadence vue (cibles en direct de la phase C)
 
+// Paquet 0x08 (display >= 2.18.x-rd45log, 2 Hz) : [1]=seq, [2..16]=15 octets bruts de la
+// derniere trame 0x46 du controleur RD45 (contenu inconnu, logge tel quel), [17]=age en
+// unites de 100 ms depuis la derniere 0x46 (255 = jamais), [18]=compteur roulant.
+let lastF46 = null;
+function handle08(dv) {
+  let hex = '';
+  for (let i = 2; i <= 16; i++) hex += dv.getUint8(i).toString(16).padStart(2, '0');
+  lastF46 = { hex, age: dv.getUint8(17), n: dv.getUint8(18), seq: dv.getUint8(1) };
+}
+
 let lastPkt = 0;   // watchdog : dernier paquet 0x04 recu
 function handle04(dv) {
   const d = decode04(dv), now = Date.now();
@@ -472,7 +530,8 @@ function handle04(dv) {
   hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps, err:d.err, pmeca:pmeca??0});
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
   // bset = consigne de duty envoyée en mode banc, pour corréler consigne / duty remonté
-  if (recording) { log.push({ t:now, stp:(proto?proto.curId:undefined), bset:(bench&&bench.running)?Math.round(bench.sentD):undefined, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d }); $('recInfo').textContent = log.length+' échantillons'; }
+  if (recording) { log.push({ t:now, stp:(proto?proto.curId:undefined), bset:(bench&&bench.running)?Math.round(bench.sentD):undefined, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d,
+      ...(lastF46 ? { f46:lastF46.hex, f46age:lastF46.age, f46n:lastF46.n } : {}) }); $('recInfo').textContent = log.length+' échantillons'; }
   if (proto) protoSample(d, now);
 }
 
@@ -1894,11 +1953,7 @@ function endProto(aborted){
   if(bench) benchStop(aborted ? 'protocole interrompu' : 'protocole terminé');
   $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
   if(ftmsCtrl) trainerResistancePct(20);   // relacher la charge en fin de test
-  if(log.length){
-    const blob=new Blob([log.map(r=>JSON.stringify(r)).join('\n')],{type:'application/jsonl'});
-    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-    a.download='bench-proto'+p.phase+'-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jsonl'; a.click();
-  }
+  archiveLog('banc', 'proto'+p.phase, { phase:p.phase, aborted:!!aborted });
   $('protoRun').hidden=true; $('protoDone').hidden=false;
   const ko=p.results.filter(r=>r.v==='KO').length, att=p.results.filter(r=>r.v==='ATT').length;
   $('pDoneTitle').textContent=(aborted?'⚠ Test interrompu'+(p.abortMsg?' ('+p.abortMsg+')':'')+' — ':'')
@@ -2184,11 +2239,7 @@ async function benchStop(reason){
   if(benchRec && !proto){
     benchRec=false; recording=false;
     $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
-    if(log.length){
-      const blob=new Blob([log.map(r=>JSON.stringify(r)).join('\n')],{type:'application/jsonl'});
-      const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-      a.download='bench-mode-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jsonl'; a.click();
-    }
+    archiveLog('banc', 'mode');
   }
   benchUi(reason || 'arrêté');
 }
@@ -2210,15 +2261,127 @@ $('btnRec').onclick = () => {
   if (proto || benchRec) return;   // enregistrement piloté par le protocole / le mode banc
   recording = !recording;
   if (recording) { log=[]; $('btnRec').textContent='■ Stop'; $('btnDl').disabled=true; }
-  else { $('btnRec').textContent='● Enregistrer'; $('btnDl').disabled=!log.length; }
+  else { $('btnRec').textContent='● Enregistrer'; $('btnDl').disabled=!log.length; archiveLog(); }
 };
-$('btnDl').onclick = () => {
-  const blob = new Blob([log.map(r=>JSON.stringify(r)).join('\n')], {type:'application/jsonl'});
+$('btnDl').onclick = () => { const f = buildJsonl(); dlJsonl(f.text, f.name); };
+
+/* ---------------------------------------------------------------------------
+   ARCHIVAGE GITHUB — depot prive SykloFR/syklo-logs.
+   A chaque fin d'enregistrement (bouton Stop, fin de protocole, arret du mode
+   banc) le JSONL part par l'API GitHub (PUT contents) avec le jeton saisi dans
+   le panneau (localStorage de CE navigateur, jamais dans la page). Echec →
+   file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
+   Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
+   Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
+const DASH_VERSION = '2026-09-08';
+const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
+const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
+function arcLoad(){
+  try { const o = JSON.parse(localStorage.getItem('arc.v1')||'{}'); for (const k of ARC_FIELDS) if (o[k]!=null) $(k).value = o[k]; } catch(_){}
+  arcSummary();
+}
+function arcSave(){
+  const o = {}; for (const k of ARC_FIELDS) o[k] = $(k).value;
+  try { localStorage.setItem('arc.v1', JSON.stringify(o)); } catch(_){}
+  arcSummary();
+}
+function arcToken(){ try { return localStorage.getItem('arc.token') || ''; } catch(_){ return ''; } }
+function arcSummary(){
+  const id = arcIdClean();
+  $('arcSumId').textContent = id === 'SANS-ID' ? '(identifiant non renseigné)' : id + ' · ' + $('arcType').value + ' · ' + $('arcCtx').value;
+  $('arcSumSt').textContent = arcToken() ? 'jeton ✓' : 'jeton absent';
+}
+function arcIdClean(){
+  const v = ($('arcId').value||'').trim().normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/[^A-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'');
+  return v || 'SANS-ID';
+}
+function arcStatus(msg, cls){ $('arcStatus').textContent = msg; $('arcStatus').className = cls||''; }
+const pad2 = n => String(n).padStart(2,'0');
+function isoLocal(d){
+  const o = -d.getTimezoneOffset(), sg = o>=0?'+':'-', a = Math.abs(o);
+  return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+'T'+pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds())
+       + '.'+String(d.getMilliseconds()).padStart(3,'0')+sg+pad2(Math.floor(a/60))+':'+pad2(a%60);
+}
+function dlJsonl(text, name){
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'bench-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jsonl';
-  a.click();
+  a.href = URL.createObjectURL(new Blob([text], {type:'application/jsonl'})); a.download = name; a.click();
+}
+// Construit le fichier : nom, chemin dans le depot, texte (meta + echantillons).
+function buildJsonl(ctxOverride, tag, extra){
+  const ctx = ctxOverride || $('arcCtx').value || 'route';
+  const id = arcIdClean();
+  const t0 = new Date(log.length ? log[0].t : Date.now()), t1 = new Date(log.length ? log[log.length-1].t : Date.now());
+  const stamp = isoLocal(t0).slice(0,19).replace(/:/g,'-');
+  const day = stamp.slice(0,10);
+  const name = stamp+'_'+id+'_'+ctx+(tag?'-'+tag:'')+'.jsonl';
+  const meta = { schema:1, ts:isoLocal(t0), tsEnd:isoLocal(t1), tz:(Intl.DateTimeFormat().resolvedOptions().timeZone||null),
+    id, motorType:$('arcType').value, motorFw:$('arcFw').value||null, ctx, tag:tag||null, note:$('arcNote').value||null,
+    preset:(MOTORS[cfg.motor] ?? cfg.motor ?? null), dispFw:(cfg.fw ?? null), proto:srcProto(),
+    motorVersion:(motorSrc==null?null:(motorSrc>>4)), ble:(sw102Dev&&sw102Dev.name)||null, dash:DASH_VERSION,
+    ua:navigator.userAgent, n:log.length, ...(extra||{}) };
+  const text = JSON.stringify({meta}) + '\n' + log.map(r=>JSON.stringify(r)).join('\n') + '\n';
+  return { name, path:'logs/'+id+'/'+day+'/'+name, text, meta };
+}
+function b64(text){
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej;
+    r.readAsDataURL(new Blob([text], {type:'application/octet-stream'})); });
+}
+async function ghPut(path, text, message){
+  const tok = arcToken(); if (!tok) throw new Error('jeton absent');
+  const content = await b64(text);
+  const r = await fetch(GH_API+'/repos/'+ARC_REPO+'/contents/'+path, { method:'PUT',
+    headers:{ 'Authorization':'Bearer '+tok, 'Accept':'application/vnd.github+json', 'X-GitHub-Api-Version':'2022-11-28', 'Content-Type':'application/json' },
+    body: JSON.stringify({ message, content, branch:ARC_BRANCH }) });
+  if (r.status === 201 || r.status === 200) return (await r.json()).content.html_url;
+  const e = new Error('HTTP '+r.status+' '+(await r.text()).slice(0,140)); e.status = r.status; throw e;
+}
+// File d'attente (IndexedDB : localStorage est trop petit pour un roulage d'une heure).
+function arcDb(){ return new Promise((res, rej) => { const q = indexedDB.open('syklo-arc', 1);
+  q.onupgradeneeded = () => q.result.createObjectStore('queue', {keyPath:'path'}); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+async function arcQueueAll(){ const db = await arcDb(); return new Promise((res, rej) => { const r = db.transaction('queue').objectStore('queue').getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function arcQueuePut(item){ const db = await arcDb(); return new Promise((res, rej) => { const t = db.transaction('queue','readwrite'); t.objectStore('queue').put(item); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
+async function arcQueueDel(path){ const db = await arcDb(); return new Promise((res, rej) => { const t = db.transaction('queue','readwrite'); t.objectStore('queue').delete(path); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
+async function arcQueueUi(){ try { const q = await arcQueueAll(); $('btnArcFlush').textContent = 'Renvoyer la file ('+q.length+')'; $('btnArcFlush').disabled = !q.length; } catch(_){} }
+async function arcSend(item){
+  const msg = 'log: '+item.meta.id+' '+item.meta.ctx+(item.meta.tag?'-'+item.meta.tag:'')+' '+item.meta.ts.slice(0,19)+' ('+item.meta.n+' échantillons)';
+  try { return await ghPut(item.path, item.text, msg); }
+  catch (e) { if (e.status === 422) { const p2 = item.path.replace(/\.jsonl$/, '-2.jsonl'); return await ghPut(p2, item.text, msg); } throw e; }
+}
+async function archiveLog(ctxOverride, tag, extra){
+  if (!log.length) return;
+  const f = buildJsonl(ctxOverride, tag, extra);
+  const item = { path:f.path, text:f.text, meta:f.meta, name:f.name };
+  if (!arcToken()) { await arcQueuePut(item); arcQueueUi(); dlJsonl(f.text, f.name); arcStatus('jeton absent — fichier en file d\'attente + téléchargé', 'bad'); return; }
+  arcStatus('envoi de '+f.name+'…');
+  try { const url = await arcSend(item); arcStatus('déposé : '+f.path, 'ok'); linkLog('log archivé → '+f.path); arcFlush(true); }
+  catch (e) { await arcQueuePut(item); arcQueueUi(); dlJsonl(f.text, f.name); arcStatus('envoi échoué ('+e.message+') — en file d\'attente + téléchargé', 'bad'); }
+}
+async function arcFlush(silent){
+  if (!arcToken() || !navigator.onLine) { if(!silent) arcStatus(arcToken()?'hors ligne':'jeton absent', 'bad'); return; }
+  let q; try { q = await arcQueueAll(); } catch(_) { return; }
+  let n = 0;
+  for (const item of q) {
+    try { await arcSend(item); await arcQueueDel(item.path); n++; }
+    catch (e) { arcStatus('renvoi échoué : '+e.message, 'bad'); if (e.status === 401 || e.status === 403) break; }
+  }
+  arcQueueUi();
+  if (n) arcStatus(n+' fichier(s) renvoyé(s)', 'ok');
+}
+$('btnArcTok').onclick = () => { const v = $('arcTok').value.trim(); if (!v) { arcStatus('jeton vide', 'bad'); return; }
+  try { localStorage.setItem('arc.token', v); } catch(_){} $('arcTok').value = ''; arcSummary(); arcStatus('jeton enregistré dans ce navigateur', 'ok'); arcFlush(true); };
+$('btnArcTest').onclick = async () => {
+  const tok = arcToken(); if (!tok) { arcStatus('jeton absent', 'bad'); return; }
+  arcStatus('test…');
+  try { const r = await fetch(GH_API+'/repos/'+ARC_REPO, { headers:{ 'Authorization':'Bearer '+tok, 'Accept':'application/vnd.github+json', 'X-GitHub-Api-Version':'2022-11-28' } });
+    if (r.ok) { const j = await r.json(); arcStatus('jeton OK — '+j.full_name+(j.permissions&&j.permissions.push?' (écriture ✓)':' (écriture ? vérifier la permission Contents)'), 'ok'); }
+    else arcStatus('jeton refusé : HTTP '+r.status, 'bad'); }
+  catch (e) { arcStatus('test impossible : '+e.message, 'bad'); }
 };
+$('btnArcFlush').onclick = () => arcFlush(false);
+for (const k of ARC_FIELDS) $(k).addEventListener('change', arcSave);
+$('arcId').addEventListener('input', arcSummary);
+arcLoad(); arcQueueUi();
+addEventListener('online', () => arcFlush(true));
 function stats(key) {
   const src = (recording||log.length) ? log : hist;
   const v = src.map(r=>r[key]).filter(x=>x!==undefined);

@@ -11,7 +11,7 @@ qu'un pointeur vers ce dépôt — il n'y a plus de copie à synchroniser.
 
 Page unique (`index.html`, zéro dépendance) qui se connecte au SW102 en Web
 Bluetooth (service NUS) et affiche en live le **paquet 0x04** du firmware
-2.18.0-z8osf : ADC torque brut + delta, cadence, duty, ERPS, FOC, courant ADC,
+2.18.0-z8osf (et le paquet 0x08 = trame 0x46 brute du contrôleur RD45, display ≥ 2.18.x-rd45log) : ADC torque brut + delta, cadence, duty, ERPS, FOC, courant ADC,
 tension, erreurs (bit7 = E08), hall, vitesse — 10 Hz, graphe 60 s.
 
 ## Lancer
@@ -29,8 +29,18 @@ python -m http.server 8765
 
 ## Boucle de travail avec Claude
 
-1. « Enregistrer » avant un run → « Stop » → « Télécharger JSONL » →
-   déposer le fichier dans `chantier-z8-osf/bench/logs/` → Claude l'analyse.
+1. Renseigner une fois le panneau **« Archivage GitHub »** (identifiant vélo/moteur, type,
+   firmware moteur déclaré, contexte, note) et coller le **jeton GitHub** (fine-grained,
+   dépôt `SykloFR/syklo-logs`, permission *Contents : Read and write*) → « Enregistrer le
+   jeton » → « Tester ». Ces réglages restent dans le navigateur de l'appareil.
+2. « Enregistrer » avant un run → « Stop » (ou fin de protocole / arrêt du mode banc) :
+   le JSONL part **automatiquement** dans le dépôt privé `syklo-logs` sous
+   `logs/<ID>/<date>/<horodatage>_<ID>_<contexte>.jsonl`, première ligne = `meta`
+   (identifiant, type, firmware, contexte, preset display, protocole détecté, horodatage,
+   fuseau). Claude fait `git pull` dans `Dev-Agent-Syklo/syklo-logs/` et analyse.
+   Hors ligne ou jeton absent : file d'attente locale (bouton « Renvoyer la file ») et
+   téléchargement local en secours ; « Télécharger JSONL » reste disponible.
+   Sur téléphone : Chrome Android (Web Bluetooth) — le dashboard tourne en roulant.
 2. « Copier stats » met un résumé JSON (min/max/moyenne fenêtre) dans le
    presse-papier → coller directement dans le chat.
 3. Alternative live : ouvrir la page dans Chrome avec l'extension Claude
