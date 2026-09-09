@@ -522,7 +522,10 @@ let lastF46 = null;
 function handle08(dv) {
   let hex = '';
   for (let i = 2; i <= 16; i++) hex += dv.getUint8(i).toString(16).padStart(2, '0');
-  lastF46 = { hex, age: dv.getUint8(17), n: dv.getUint8(18), seq: dv.getUint8(1) };
+  // [19] (display >= 2.18.10-rd45log build 2) : longueur reelle de la trame 0x46 (Tongsheng
+  // annonce 6 octets ; le firmware clot la capture des qu'un 0x43 arrive apres >= 6 octets).
+  lastF46 = { hex, age: dv.getUint8(17), n: dv.getUint8(18), seq: dv.getUint8(1),
+              len: dv.byteLength >= 20 ? dv.getUint8(19) : null };
 }
 
 let lastPkt = 0;   // watchdog : dernier paquet 0x04 recu
@@ -546,7 +549,7 @@ function handle04(dv) {
     $('uartTile').classList.toggle('bad', d.ckErr>0 || d.commErr>0);
   } else { $('vSpdRaw').textContent='n/a'; $('vTickRaw').textContent='n/a'; $('vUart').textContent='n/a'; }
   $('vF46').textContent = lastF46 ? lastF46.hex.replace(/(..)/g,'$1 ').trim() : '–';
-  $('vF46U').textContent = lastF46 ? 'âge '+(lastF46.age===255?'∞':(lastF46.age/10).toFixed(1)+' s')+' · n='+lastF46.n : 'brute (paquet 0x08)';
+  $('vF46U').textContent = lastF46 ? 'âge '+(lastF46.age===255?'∞':(lastF46.age/10).toFixed(1)+' s')+' · n='+lastF46.n+(lastF46.len!=null?' · '+lastF46.len+' o':'') : 'brute (paquet 0x08)';
   $('vPkts').textContent=pkts; $('vLost').textContent=lost;
   // en stock, err est le CODE d'erreur Tongsheng, pas le bitfield OSF
   $('vErr').textContent = d.err ? (na ? 'code '+d.err
@@ -558,7 +561,7 @@ function handle04(dv) {
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
   // bset = consigne de duty envoyée en mode banc, pour corréler consigne / duty remonté
   if (recording) { log.push({ t:now, stp:(proto?proto.curId:undefined), bset:(bench&&bench.running)?Math.round(bench.sentD):undefined, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d,
-      ...(lastF46 ? { f46:lastF46.hex, f46age:lastF46.age, f46n:lastF46.n } : {}) }); $('recInfo').textContent = log.length+' échantillons'; }
+      ...(lastF46 ? { f46:lastF46.hex, f46age:lastF46.age, f46n:lastF46.n, f46len:lastF46.len } : {}) }); $('recInfo').textContent = log.length+' échantillons'; }
   if (proto) protoSample(d, now);
 }
 
