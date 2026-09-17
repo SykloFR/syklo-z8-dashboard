@@ -176,6 +176,23 @@ Verdict par étape (OK / ATTENTION / ÉCHEC) + « Copier le verdict » (JSON ave
 config moteur du paquet 0x05). Le mode ERG n'est **jamais** utilisé : sa double
 boucle de régulation masque les écarts entre moteurs (cf. étude banc).
 
+### Phase C — pédalage humain (~4 min, chaîne + home trainer, mode normal)
+
+La chaîne d'entrée (capteur de couple → loi des niveaux → régulation). Références `REFC`
+(run sain 29/07 14:39, provisoire) ; verdicts recalculables sans moteur avec
+`node tools/replay-c.js index.html <run-protoC.jsonl> --cfg '{"mode":4,"aT":[…],"aP":[…]}'`.
+
+| Étape | Ce qu'on vérifie | Verdict |
+|---|---|---|
+| C0 | offset couple, assistance fantôme, tension | absolus |
+| C1a-c | profil capteur : pédalage tranquille (zone morte : delta médian ≥ 8), attaques (delta max vs réf 160), moulinage force faible | absolus + info |
+| C1d | retour à zéro (dérive > 15 = hystérésis) ; **corrélation couple↔roue sur tout C1** : ATT si r < `REFC.c1corrAtt` (0,25 — sains 0,33-0,61) | étalonné 2026-09-11 |
+| C2L1-5 | courant, à-coups (> 30 %), maintien (< 60 %), absence d'assistance ; le **ratio absolu** courant/(delta×cadence) est informatif (il dépend du preset) ; au niveau 5, la **progression 1→5** doit suivre la loi du preset (aT torque / aP power / la mieux suivie en hybrid) à ±25 % | progression vs loi |
+| C2p | réponse aux pics (gain, latence, répétabilité) | info |
+| C3 | over-run à la coupure (> 1 s = ATT), montée | réf 0,1 s |
+
+Comparable uniquement à conditions égales (firmware moteur, preset display, street, batterie).
+
 ### E08 et assist-with-error (phase A)
 
 Chaîne déposée, la roue ne tourne jamais → **E08 (capteur vitesse) est inévitable**

@@ -50,6 +50,8 @@ const sandbox = {
   Date: class extends Date { constructor(...a){ if(!a.length) super(NOW); else super(...a); }
                              static now(){ return NOW; } },
   Uint8Array, DataView, Math, JSON, Set, Map, Promise, isNaN, parseInt, parseFloat,
+  // archivage GitHub (2026-09-07) : IndexedDB factice, la promesse arcDb ne se resout jamais (pas d'archivage a blanc)
+  indexedDB: { open: () => ({}) },
 };
 sandbox.globalThis = sandbox;
 const OUT = { alerts:[], steps:[], sends:[], errors:[] };
