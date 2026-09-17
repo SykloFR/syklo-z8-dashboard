@@ -78,6 +78,15 @@ Ajoute deux tuiles :
 - **Puissance roue** (W, mesure du trainer) ;
 - **Ratio roue/batterie** — affiché seulement si le moteur consomme > 20 W.
 
+Panneau **« Home trainer — pilotage manuel »** (hors protocole guidé) : résistance
+directe (%), pente simulée (%) ou puissance cible ERG (W), plus le bouton
+**« Charge max »** = ERG 600 W (plafond du Van Rysel D100). ⚠ « Résistance 100 % »
+n'est **pas** la charge maximale : c'est le niveau 10 d'une courbe qui suit la
+vitesse (~11 W/km/h, presque rien à l'arrêt) — vu le 2026-09-17, le volant
+s'emballait à 45-49 km/h en 1 s sur des départs L5. En ERG, le trainer doit tenir
+la cible quelle que soit la vitesse et pousse son frein au maximum sous ~10 km/h :
+c'est le réglage pour charger un départ en force ou un maintien à basse vitesse.
+
 ⚠️ Le ratio **n'est PAS le rendement du moteur** : la puissance à la roue inclut
 l'apport du cycliste. Pour approcher un rendement, il faut soustraire une mesure
 de référence faite au même braquet et à la même vitesse, assistance coupée.

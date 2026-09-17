@@ -297,7 +297,15 @@
     <input type="range" id="trVal" min="0" max="100" value="20" step="1" style="flex:1;min-width:200px">
     <b id="trValTxt" style="font-size:20px;font-variant-numeric:tabular-nums;min-width:80px">20 %</b>
     <button id="btnTrApply">Appliquer</button>
+    <button id="btnTrMax" title="ERG 600 W : le trainer met son frein au maximum physique sous ~10 km/h — la vraie charge max pour un départ en force">Charge max</button>
     <button id="btnTrRelease" class="sec">Relâcher</button>
+  </div>
+  <div class="hint" style="margin-top:6px">
+    ⚠ <b>« Résistance 100 % » n'est pas la charge maximale</b> : c'est le niveau 10
+    d'une courbe qui suit la vitesse (~11 W/km/h, presque rien à l'arrêt). Pour
+    charger un départ ou un maintien à basse vitesse, utilisez <b>Charge max</b>
+    (ERG 600 W) : le trainer doit tenir la cible quelle que soit la vitesse et
+    pousse son frein au maximum.
   </div>
   <div id="trDiag" style="color:var(--dim);font-size:12px"></div>
 </div>
@@ -929,28 +937,44 @@ function trUi(){
   $('trValTxt').textContent=sl.value+m.unit;
   const busy=!!proto;
   $('btnTrApply').disabled = busy || !ftmsCtrl;
+  $('btnTrMax').disabled = busy || !ftmsCtrl;
   $('btnTrRelease').disabled = busy || !ftmsCtrl;
   $('trDiag').textContent = busy ? 'protocole guidé en cours — il pilote la résistance lui-même'
     : !ftmsCtrl ? 'connectez le home trainer (bouton en haut)'
-    : 'contrôle FTMS actif'+(ftmsResRange?' — plage résistance '+ftmsResRange.min+'…'+ftmsResRange.max:'');
+    : 'contrôle FTMS actif'+(ftmsResRange?' — plage résistance '+ftmsResRange.min+'…'+ftmsResRange.max:'')
+      +(trLast?' — '+trLast:'');
 }
+/* Derniere consigne appliquee : trUi() reecrit trDiag chaque seconde, sans
+   cette memoire le « appliqué : … » disparaissait en < 1 s (invisible). */
+let trLast='';
 async function trApply(){
   if(proto || !ftmsCtrl) return;
   const mode=$('trMode').value, v=+$('trVal').value;
   const ok = mode==='res'   ? await trainerResistancePct(v)
            : mode==='grade' ? await trainerGradePct(v)
            :                  await trainerTargetPowerW(v);
-  $('trDiag').textContent = ok
-    ? 'appliqué : '+(mode==='res'?'résistance '+v+' %':mode==='grade'?'pente '+v+' %':'cible '+v+' W')
-      +' — '+new Date().toLocaleTimeString()
+  trLast = ok
+    ? 'appliqué : '+(mode==='res'?'résistance '+v+' %':mode==='grade'?'pente '+v+' %':mode==='erg'&&v>=TR_MAX_W?'CHARGE MAX (ERG '+v+' W)':'cible '+v+' W')
+      +' à '+new Date().toLocaleTimeString()
     : 'échec d’écriture FTMS (commande refusée par le trainer ?)';
+  trUi();
 }
 $('trMode').onchange=trUi;
 $('trVal').oninput=()=>{ $('trValTxt').textContent=$('trVal').value+(TR_CFG[$('trMode').value]||TR_CFG.res).unit; };
 $('trVal').onchange=trApply;                 // relacher le curseur = appliquer
 $('btnTrApply').onclick=trApply;
+/* CHARGE MAX — « resistance 100 % » n'est PAS la charge maximale : c'est le
+   niveau 10 d'une courbe qui suit la vitesse (~11 W/km/h, quasi rien a
+   l'arret). Piege vu le 2026-09-17 (SAV cargo, run R-A) : 9 departs L5 a
+   « 100 % » et le volant s'emballait a 45-49 km/h en 1 s. En ERG le trainer
+   doit tenir la cible quelle que soit la vitesse : sous ~10 km/h il pousse son
+   frein au maximum physique (run R-A2 : vitesse au pic 15-31 km/h au lieu de
+   26-45). 600 W = plafond d'absorption du Van Rysel D100 (pmeca max observe). */
+const TR_MAX_W=600;
+$('btnTrMax').onclick=async()=>{ if(!ftmsCtrl||proto) return;
+  $('trMode').value='erg'; trUi(); $('trVal').value=TR_MAX_W; await trApply(); };
 $('btnTrRelease').onclick=async()=>{ if(!ftmsCtrl||proto) return;
-  await trainerResistancePct(0); $('trDiag').textContent='résistance relâchée (0 %)'; };
+  await trainerResistancePct(0); trLast='résistance relâchée (0 %)'; trUi(); };
 setInterval(trUi, 1000);
 trUi();
 
