@@ -11,7 +11,8 @@ qu'un pointeur vers ce dépôt — il n'y a plus de copie à synchroniser.
 
 Page unique (`index.html`, zéro dépendance) qui se connecte au SW102 en Web
 Bluetooth (service NUS) et affiche en live le **paquet 0x04** du firmware
-2.18.0-z8osf (et le paquet 0x08 = trame 0x46 brute du contrôleur RD45, display ≥ 2.18.x-rd45log) : ADC torque brut + delta, cadence, duty, ERPS, FOC, courant ADC,
+2.18.0-z8osf (et le paquet 0x08 = trame 0x46 du contrôleur RD45, display ≥ 2.18.x-rd45log,
+**décodée** depuis le 2026-09-21 : patch speedfix v3/v4) : ADC torque brut + delta, cadence, duty, ERPS, FOC, courant ADC,
 tension, erreurs (bit7 = E08), hall, vitesse — 10 Hz, graphe 60 s.
 
 ## Lancer
@@ -93,6 +94,20 @@ de référence faite au même braquet et à la même vitesse, assistance coupée
 
 Un garde-fou ignore les valeurs hors [0, 3000] W (trames partielles au démarrage).
 
+## BMS JBD (puissance batterie réelle)
+
+Bouton **« Connecter BMS JBD »** — 3ᵉ connexion GATT, indépendante du display et du
+trainer, **lecture seule**. Même protocole que SykloConnect
+(`shared/ble-specs/ble-commands.md`) : service `ff00`, commande `DD A5 03 00 FF FD 77`
+sur `ff02` toutes les secondes, réponse `DD 03 00 <len> <data…> <ck> 77` sur `ff01`
+(tension u16 ×10 mV, courant s16 ×10 mA — la page le renvoie **décharge positive** —,
+SOC à data[19]) réassemblée sur la longueur annoncée (morceaux BLE de 20 octets).
+
+Tuile **Puissance batt. (BMS)** + champs JSONL `vbat` / `ibat` / `pbat`. C'est la
+**seule** puissance batterie fiable sous firmware stock (le display n'y remonte que
+le courant phase) et la grandeur mesurée par le banc de certification. Le pack du
+banc est un JBD ; un DPowerCore n'est pas géré ici.
+
 ## Format JSONL
 
 `{t, seq, torque, delta, cad, duty, erps, foc, cur, voltX10, err, hall, spdX10, pow, pmeca, src}`
@@ -100,6 +115,31 @@ Un garde-fou ignore les valeurs hors [0, 3000] W (trames partielles au démarrag
 vitesse = spdX10/10 km/h ; `pow` = puissance batterie W, `pmeca` = puissance roue W,
 `null` si le trainer n'est pas connecté ; `src` = octet 19 du 0x04, `null` si
 display < 2.18.10 — voir section suivante.)
+
+Champs optionnels : `stp` (étape du protocole guidé), `stb` (= 1 dans une fenêtre
+stable de la phase S), `bset` (consigne banc), `vbat` / `ibat` / `pbat` (tension V,
+courant A — décharge positive — et puissance W **réels** lus sur le BMS JBD, présents
+seulement quand il est connecté, voir « BMS JBD »).
+
+Champs ajoutés le 2026-09-21 :
+
+| Champ | Présent quand | Sens |
+|---|---|---|
+| `tr`, `ta` | rafale BLE reconstruite | `tr` = 1 : `t` a été **reconstruit** sur le compteur `seq` (voir « Fiabilité sur Android ») ; `ta` = temps de réception réel (ms epoch), seulement si `tr` = 1 |
+| `gpsX10`, `gpsAcc` | géolocalisation accordée et au moins un fix | vitesse GPS × 10 (km/h) et précision (m) du dernier fix s'il a ≤ 3 s, sinon `null` ; **absents** si le GPS est refusé ou indisponible |
+| `r_ver`, `r_fix`, `r_cur`, `r_tq` | bloc 0x46 décodé (stock RD45, tout patch) | version du patch (0 = stock non patché), mode FIX (1) / DIAG (0), courant moteur brut TX18-19, couple net TX22 |
+| `r_nbad` | patch ≥ v3 | compteur de rejets capteur (mod 16) |
+| `r_p`, `r_est`, `r_stock`, `r_spread` | patch **v3** | période d'impulsion capteur (205 µs, 4500 = arrêt), estimation patch (= `tickRaw`), période stock brute, étendue des 16 dernières périodes |
+| `r_tq10`, `r_cad`, `r_fw`, `r_stemp`, `r_hall`, `r_pg`, `r_pv` | patch **v4** | couple 10 bits, compteur d'impulsions de pédalage (1..127), bit roue libre, température capteur (6 bits), Hall_Speed, index et valeur de la page |
+
+Le `f46` brut (hex), `f46age`, `f46n`, `f46len` sont conservés tels quels : les `r_*` en
+sont une lecture compacte (`decodeF46` dans `index.html`, layout ci-dessous), redécodable
+a posteriori si le layout évolue.
+
+⚠ `voltX10` (0x04, octets 13-14) est `battery_voltage_soc_x10` = tension mesurée
+**+ I × R_pack** (`state.c`, compensation pour le SOC) — sous charge ce n'est pas la
+tension aux bornes, en OSF comme en stock. Pour une tension et une puissance batterie
+vraies : le BMS (`vbat`, `pbat`).
 
 ## Moteur en firmware STOCK Tongsheng (display ≥ 2.18.10)
 
@@ -113,7 +153,8 @@ En stock, le display remplit le 0x04 depuis la trame native 9 octets :
 | Champ | En stock |
 |---|---|
 | `torque` | **signal couple brut Tongsheng** (octet 3 de la trame) — échelle et offset ≠ ADC OSF (le repère « vide 120-250 » ne s'applique pas) |
-| `cur` | courant batterie, **converti à la même unité que l'OSF** (0,16 A/LSB → ×0,16 = A, formules inchangées) |
+| `cur` | **courant PHASE** (octet 4 de la trame 0x43, 0,2 A/LSB dans la convention du display) — **pas le courant batterie** : établi le 2026-09-17 (display 33-35 A quand le BMS JBD voit 23,7 A = cap 22 A du hex). Mesure *relative* du couple moteur à vitesse égale ; ne jamais en faire des watts batterie |
+| `pow` | calcul display = courant phase × tension → **gonflé ×1,4-1,5**, à ignorer en stock. Puissance batterie réelle = `pbat` (BMS JBD) |
 | `voltX10`, `spdX10` | valides (tension = ADC display, vitesse = ticks stock) |
 | `err` | **CODE d'erreur stock Tongsheng** — PAS le bitfield OSF, ne pas décoder err02…err08 |
 | `delta`, `cad`, `duty`, `erps`, `foc`, `hall` | **absents de la trame stock** → 0 (« n/a » à l'écran) |
@@ -127,6 +168,89 @@ d'ailleurs l'armement hors OSF. Évaluer un moteur stock = **run libre
 ● Enregistrer** (pédalage réel ou sur trainer) : couple brut, courant, tension,
 vitesse, erreurs. Comparaison **entre moteurs stock uniquement**, jamais aux
 références REF/REFC (établies sous OSF).
+
+### Bloc 0x46 décodé — RD45 + patch Syklo « speedfix » (2026-09-21)
+
+Le display en stock relaie dans le **paquet 0x08** (2 Hz) les 15 octets `TX[9..23]` du bloc
+TX du contrôleur KZQWA56 : `f46[0]` = 0x46 (en-tête), `f46[i]` = `TX[9+i]`, `f46[14]` =
+somme 8 bits de `f46[0..13]`. `decodeF46(bytes)` (index.html) lit ce bloc **versionné sur
+l'octet mode `f46[5]` = TX14** : bit 7 = FIX actif, bits 0-6 = version du patch (0 = stock
+non patché, tout à 0). ⚠ Le décodeur Python de référence
+(`chantier-rd45-firmware/patch/decode_f46_patch.py`) saute l'en-tête : son `f46[i]` est
+notre `f46[i+1]`.
+
+| Octets (paquet BLE) | Commun | v3 (`0x03` / `0x83`) | v4 (`0x04` / `0x84`) |
+|---|---|---|---|
+| `f46[1..2]` | | SPA/SPB brut LE : bit 15 niveau, bits 0-14 = `p` période d'impulsion (205 µs, 9/tour, 4500 = arrêt) | `f46[1]` = octet 3 capteur Kclamber : bit 7 roue libre (bascule à chaque transition, 18/tour), bits 0-6 compteur de pédalage 1..127 ; `f46[2]` = octet 1 capteur : bits 7-2 température, bits 1-0 couple bits 9-8 |
+| `f46[3..4]` | | `est` u16 LE = T_roue/2 en LSB 2 ms (= `tickRaw` en FIX ; ≥ 1750 = 0 km/h) | `f46[3]` = couple bits 7-0 (couple 10 bits = `((f46[2]&3)<<8)|f46[3]`) ; `f46[4]` = **valeur de page** |
+| `f46[6]` | | bits 0-3 `n_bad` mod 16, bits 4-7 étendue/8 | bits 0-3 `n_bad`, bits 4-7 **index de page** |
+| `f46[7..8]` | | période stock brute `speed_bike` (repliement > 30 km/h) | `Hall_Speed` u16 LE |
+| `f46[9..10]` | courant moteur u16 LE (`AV_Current_FB` × 2,5 — unité à étalonner : `RD45_CUR_K` en tête de script, `null` = brut) | | |
+| `f46[13]` | couple net TX22 = (couple − zéro) ≫ 4 | | |
+
+Pages v4 (`F46_PAGES`, table éditable, layout figé le 2026-09-21) : 0 `V_Dc≫4` (affiché aussi
+en **≈ V** : ×16 / 46,8, à comparer à la tension display), 1 `POT_temp≫4`, 2-4 drapeaux
+(`flags0` b24-31, `flags1` b16-23, b0-7 — affichés en binaire **avec le nom des bits posés**),
+5 `speed_limit_current≫4` (600 = bride, 1800 = plein), 6 `data_lj_zero≫2` (zéro couple appris),
+7 étendue max-min des 16 dernières périodes (205 µs, saturé 255), 8 température contrôleur,
+9 Δ compteur cadence sur 10 trames, 10-11 réservé, **12 `system_state_lj_flag`** (bit 0 zéro
+couple acquis, **bit 2 capteur de couple défaillant** — latché, le contrôleur bascule
+silencieusement sur l'assistance à la cadence), 13-15 réservé. Une page toutes les ~130 ms →
+chaque page ≈ toutes les 2 s : le dashboard garde la **dernière valeur de chaque page avec
+son âge** (tuile de 13 lignes).
+
+Bits nommés (RE `chantier-rd45-firmware/analyses/codes-erreur-kzqwa56.md`) — page 2 :
+b1 surchauffe NTC (flags0.b25), b2 TRAP étage de puissance (b26), b3 surtension (b27), b4
+sous-tension (b28) ; page 3 : b2 poignée (flags1.b18), b4 comm display (b20, jamais posé),
+b5 capteur vitesse (b21, **silencieux**, jamais lu par le stock), b6 frein au démarrage
+(b22), b7 Hall moteur (b23) ; page 4 : b2 **blocage rotor** (flags1.b2, silencieux), b5
+jamais posé.
+
+Codes `err` (octet 5 de la 0x43) en STOCK + RD45, tuile « Erreurs » = « code N — libellé »
+(`RD45_ERR`) : 1 surchauffe (inatteignable en V1.0.1), 2 TRAP étage de puissance, 4 poignée,
+5 frein au démarrage, 8 sous-tension, 9 surtension, 10 Hall moteur, 11 comm display (jamais
+posé), 14 phase / 12 V (mort). Tout code ≠ 0 pendant 3 s → moteur coupé et redémarrage
+refusé. Échelles **déduites, à étalonner** : `V_Dc` ≈ 46,8 counts/V (`RD45_VDC_K`),
+TX18-19 ≈ 1 118 counts/A (2,5 × 447, `RD45_CUR_K_DED`) — la tuile « Courant moteur »
+affiche « ≈ A déduit » tant que `RD45_CUR_K` est `null`.
+
+Vitesses : `4293/p` et `3960/est` km/h pour 2,2 m (`RD45_PERIM`) ; le display applique **sa**
+circonférence (≈ 2,11 m sur le vélo de test du 21/09 → `spdX10` ≈ 0,96 × 3960/est). `est` et
+`tickRaw` viennent de deux trames (0x46 relayée à 2 Hz, 0x43 à 5 Hz) : ±1 tick d'écart est
+normal en roulant.
+
+Tuiles (visibles **seulement en STOCK + preset RD45**, les « v4 » seulement avec le patch ≥ 4) :
+« Patch » (stock / DIAG v3 / FIX v3 / FIX v4), « Vitesse capteur » (v3 : 4293/p, avec est,
+stock et display ; v4 : 3960/tickRaw), « Rejets capteur » (changements de `n_bad` par minute
+glissante), « Courant moteur » (≈ A déduit à 1 118 counts/A + brut, ou A si `RD45_CUR_K` est
+renseigné), « Couple net »,
+« Couple 10 bits », « Cadence capteur » (impulsions/s sur 2 s + Δ page 9), « Roue libre »
+(bascules/s), « Temp. capteur », « Hall (RD45) » (Hall_Speed et rapport par km/h), « Pages du
+patch » (10 lignes valeur + âge). La tuile « Trame 0x46 » garde l'hex et ajoute la version
+(et « somme KO » si la somme de contrôle est fausse).
+
+## Fiabilité sur Android (2026-09-21)
+
+- **Wake lock écran** (`navigator.wakeLock`) tenu pendant tout enregistrement ou phase
+  guidée, ré-acquis quand la page redevient visible, relâché à l'arrêt. Sans lui, l'écran
+  s'éteint, Chrome passe la page en arrière-plan et **les notifications BLE ne sont plus
+  livrées qu'en rafale au réveil** (run route du 21/09 : 2 030 lignes sur 2 363 reçues en
+  0,75 s après un trou de 576 s). Ignoré si l'API est absente (Bluefy…).
+- **Reconstruction du temps** : le 0x04 porte un compteur `seq` u8 à 5 Hz (200 ms). Quand
+  deux 0x04 arrivent à moins de 50 ms, la ligne reçoit `t = t_précédent + 200 × Δseq`
+  (mod 256), `tr` = 1 et sa réception réelle dans `ta`. La première ligne d'une rafale porte
+  tout le trou : elle y est rattachée après coup, et **toute la rafale est ré-ancrée sur la
+  réception de sa dernière ligne** (le paquet le plus récent = temps réel) — sinon elle se
+  placerait après la fin réelle. Une rafale ne se clôt qu'après 3 paquets consécutifs revenus
+  au rythme nominal (la livraison a des hoquets de ~240 ms) ; moins de 5 lignes = gigue BLE,
+  rendues à leur temps de réception. Δseq étant modulo 256, une perte de plus de 51 s est
+  invisible : la rafale est alors **compressée** (sur le run du 21/09, 2 043 lignes = 410 s
+  reconstruites pour 576 s de trou), jamais décalée dans le futur. Le statut
+  d'enregistrement affiche « ⚠ rafale de N s reconstruite » dès qu'une rafale > 5 s a été
+  reconstruite. Rejeu : `node tools/dryrun-r.js index.html <run.jsonl>`.
+- **GPS** : `watchPosition` haute précision pendant l'enregistrement (demande d'autorisation
+  au premier ● Enregistrer) ; champs `gpsX10` / `gpsAcc` (voir « Format JSONL ») et tuile
+  « GPS » (vitesse GPS, écart display / GPS en %, précision). Rien si refusé ou indisponible.
 
 ## Version mobile (sortie route)
 
@@ -145,7 +269,8 @@ Hébergée en HTTPS sur **GitHub Pages** : https://syklofr.github.io/syklo-z8-da
 
 ## Protocole de test guidé (section « Protocole de test guidé » de la page)
 
-Deux phases **découplées**, chacune lançable seule. L'enregistrement JSONL démarre
+Phases A/B/C (mode banc, OSF), S (pédalage, stock ou OSF) et R (capteurs RD45 en stock,
+roue en l'air), chacune lançable seule. L'enregistrement JSONL démarre
 automatiquement au lancement et se télécharge automatiquement à la fin (champ `stp`
 = étape). Chaque étape affiche l'instruction, le temps restant de l'étape et le
 temps total restant ; le chrono d'une étape ne part que lorsque l'opérateur fait
@@ -201,6 +326,75 @@ La chaîne d'entrée (capteur de couple → loi des niveaux → régulation). R�
 | C3 | over-run à la coupure (> 1 s = ATT), montée | réf 0,1 s |
 
 Comparable uniquement à conditions égales (firmware moteur, preset display, street, batterie).
+
+### Phase S — caractérisation niveau × vitesse en pédalage (stock OU OSF)
+
+Constitue la base « loi d'assistance » d'un firmware (stock Tongsheng à répliquer sous
+OSF). **Aucun mode banc, aucune trame envoyée au display** : c'est l'opérateur qui est
+piloté. Spec : `chantier-z8-osf/specs/protocole-S-caracterisation-stock.md` (v3).
+
+Principe : à **charge figée** (consigne du panneau « Home trainer », résistance 100 % en
+série 1 — jamais ERG pour les niveaux assistés, la vitesse s'emballerait) et à vitesse
+égale, la puissance roue `pmeca` est la même quel que soit le niveau : seul le partage
+cycliste/moteur change. La **vitesse** est la grandeur pilote : à braquet fixe elle vaut
+exactement une cadence (`cadEst`, tuile « Cadence estimée » — 44/14 × 2 050 mm →
+2,587 rpm par km/h : 10 km/h = 26, 14 = 36, 18 = 47, 22 = 57 rpm).
+
+| Mode | Étapes | Ce qu'on obtient |
+|---|---|---|
+| **Étalonnage L0 en ERG** | niveau 0 ; pour chaque vitesse (18, 22 km/h) : paliers ERG 100 / 150 / 200 / 250 W | à L0 pmeca = 100 % cycliste → couple T = P/ω connu → **étalonnage `torque` ADC ↔ N·m** sur une vraie plage (à résistance fixe le couple L0 est le MÊME à toutes les vitesses : un seul point, d'où l'ERG ici — sans moteur il est stable) |
+| **Grille vitesses** (un run = **un niveau**) | étape « niveau X au display » (attend le 0x01), puis paliers 10 / 14 / 18 / 22 km/h ; option traversée de coupure 20 → 26 km/h ×2 | médianes par palier : v, cad≈, `torque`, `cur`, `pmeca`, `pbat` ; coupure : vitesse où `cur` tombe sous 25 % de sa valeur à 20 km/h |
+
+Palier = **30 s continues** dans la bande ±1 km/h **au bon niveau** (sortie > 2 s ou
+changement de niveau = chrono à zéro), 120 s max (au-delà : dernière fenêtre ≥ 10 s en
+ATTENTION, sinon ÉCHEC) ; **bip** et avance automatique ; « Refaire le palier » /
+« Étape suivante ». Consigne en gros et en couleur (vert dans la bande, orange à ±2,
+rouge au-delà ou mauvais niveau), ligne de vie cadence ≈ / couple / cur / roue / batt.
+Garde-fous : télémétrie, banc désarmé, trainer (pmeca) et contrôle FTMS, ERG hors
+étalonnage, pack < 43 V, **stock sans BMS** (pas de pbat), AWE sous OSF.
+
+Séance type : étalonnage L0 → grille L0 → L1 … L5 → **L0 refait** (dérive capteur /
+thermique) ; street **ON** (comme vendu) ; ≥ 3 séances (jours, états de charge).
+Fichiers `…_banc-protoS-L<n>.jsonl` (`-L0-calib` pour l'étalonnage), `stp` = palier,
+`stb` = 1 dans la fenêtre stable, `meta` = braquet, consigne trainer, street, médianes.
+
+Dépouillement : `python tools/protoS-report.py <dossier ou fichiers>` (`--id`, `--csv`) —
+étalonnage sur tous les L0, puis par charge et par niveau × vitesse : P_cycliste,
+**P_assist = pmeca − P_cycliste**, gain, `cur`, `pbat`, η, dispersion inter-runs,
+coupures. Équivalence stock ↔ OSF = mêmes paliers, même charge → même P_assist (ou pbat).
+Sous OSF `cur` redevient le courant batterie et `cad` réel doit coller à `cadEst` (contrôle
+du braquet saisi).
+
+### Phase R — cycle capteurs RD45, roue en l'air (stock + patch speedfix, ~5 min)
+
+Bouton **« ▶ Phase R — capteurs RD45 »**, actif seulement si le display est en protocole
+**stock** avec le preset **RD45** (`src & 15 == 2` et `src >> 4 == 2`, sinon `alert`). Vélo
+sur pied, **roue arrière en l'air**, aucun trainer ni BMS. Même mécanique que la phase S :
+instruction en gros, chrono d'étape, avance automatique ou « Étape suivante », « Refaire
+l'étape », `stp` = `R0`…`R7` (`R6-20` … `R6-36` pour les paliers), archivage
+`…_banc-protoR.jsonl` avec le verdict dans `meta`, « Copier le verdict » (JSON). Les réglages
+(niveau, Max speed, marche) se font **sur le display par l'opérateur** : chaque instruction le
+dit. Champ optionnel « cadence R2 » (rpm) → impulsions par tour du compteur capteur (v4).
+Un critère qui n'existe qu'en patch v4 donne **« n/a (patch < v4) »** en v3 ou stock, jamais KO.
+
+| Étape | Durée | Consigne | Verdict |
+|---|---|---|---|
+| **R0** Repos | 15 s | ne rien toucher | vitesse 0, `p` = 4500 / `est` ≥ 1750, TX22 = 0, `torque` stable (σ < 1), `err` = 0, 0 rejet ; v4 : Hall_Speed = 0, pages 2-4 = 0, **drapeaux silencieux** à 0 (page 4 b2 blocage rotor, page 12 b2 capteur de couple, page 3 b5 capteur vitesse — sinon KO nommé) |
+| **R1** Pédales en arrière | 15 s | niveau 0, manivelles en arrière lentement | v4 : roue libre bascule ≥ 5 fois **et** compteur cadence net ≤ 1 → « capteur cassette : sens OK » |
+| **R2** Pédalage à vide | 20 s | niveau 0, ~60 tr/min sans forcer | TX22 < 3 ; v4 : compteur monotone (mod 127) → impulsions/s (+ par tour si cadence saisie), roue libre bascule, Hall_Speed = 0 |
+| **R3** Appui pédale | 25 s | niveau 0, frein arrière serré, 3 × 3 s d'appui fort | 3 montées TX22 ≥ 8 et retour à 0 < 1 s après relâché ; v4 : couple 10 bits ≥ +100 sur le repos → « capteur de couple OK » |
+| **R4** Marche | 20 s (chrono dès 2 km/h) | maintenir la marche (walk assist) du display | vitesse 3-8 km/h, TX18-19 > 0, `err` = 0 ; v4 : Hall_Speed > 0 et Hall/km/h stable (CV < 5 % sur 10 s) → « Hall + moteur OK » |
+| **R5** Démarrages ×6 | 60 s | niveau 1, 3 s pédalés / 5 s d'arrêt × 6 | démarrage = TX18-19 > 1000 dans la seconde après TX22 ≥ 4 ; arrêt = TX18-19 < 500 dans les 2 s après TX22 < 2 ; n/6 (OK 6/6, ATTENTION ≥ 3) |
+| **R6** Paliers Max speed | 4 × 20 s (chrono dès 5 km/h) | niveau 2, Max speed **20, 25, 32, 36** réglé sur le display, pédaler doucement | sur les 10 dernières s : CV vitesse < 3 %, vitesse ≈ 1,1 × Max speed ± 2 km/h, étendue / p < 15 %, rejets < 2 ; v4 : rapport Hall ± 5 % du palier précédent ; info v3 : période stock vs `est` (repliement > 30) |
+| **R7** Arrêt / reprise | 20 s | depuis le palier 36 : arrêter, laisser ralentir, freiner, repédaler | v3 : `est` ≥ 1750 ≤ 2 s après `p` = 4500 ; à la reprise `est/p` entre 0,85 et 1,0 dès la 3ᵉ ligne → « timeouts OK » (v4 : jugé sur `tickRaw` du 0x04, = `est` en FIX : ≥ 1750 dans les 3 s après la dernière ligne > 4 km/h, puis reprise sans saut > 40 % sur 6 lignes) |
+
+Verdict final **par organe** : cassette/cadence, capteur de couple, capteur de vitesse,
+Hall + moteur, chaîne couple → courant, timeouts, UART/erreurs (`ckErr` / `commErr`
+inchangés et `err` = 0 sur tout le run, code RD45 nommé sinon), **drapeaux silencieux**
+(v4 : les trois bits ci-dessus à 0 en R0 **et sur tout le run**, l'étape où un bit a été vu
+est nommée ; v3 : n/a) — OK / ATTENTION / ÉCHEC / n/a + le chiffre mesuré,
+et pour chaque ÉCHEC « ce que le prochain run doit vérifier ». Rodage à blanc sur un RD45
+simulé (v3 et v4) : `node tools/dryrun-r.js index.html`.
 
 ### E08 et assist-with-error (phase A)
 

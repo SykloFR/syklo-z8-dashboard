@@ -35,10 +35,20 @@
   .proto-times b { font-size:22px; }
   .chip { display:inline-block; padding:2px 10px; border-radius:10px; font-weight:700; font-size:12px; }
   .chip.OK { background:#1e6b3f; } .chip.ATT { background:#7a5c12; } .chip.KO { background:#7a1f1c; }
+  .chip.NA { background:#3a4150; color:var(--dim); }
+  /* --- RD45 : tableau des pages du patch v4 (dans une tuile double) --- */
+  table.pages { border-collapse:collapse; width:100%; font-size:12px; font-variant-numeric:tabular-nums; margin-top:4px; }
+  table.pages td { padding:1px 6px; border-bottom:1px solid #232a33; white-space:nowrap; }
+  table.pages td:nth-child(3) { font-weight:600; }
+  table.pages td:last-child { color:var(--dim); white-space:normal; }
   table.verdict { border-collapse:collapse; width:100%; margin-top:8px; }
   table.verdict td, table.verdict th { padding:6px 10px; border-bottom:1px solid #232a33; text-align:left; font-size:13px; }
   table.verdict th { color:var(--dim); }
   .res-chip { background:#2a3340; border-radius:6px; padding:2px 8px; font-size:12px; color:var(--dim); }
+  /* --- phase S : paramètres inline (niveau, paliers, braquet) --- */
+  .sp { color:var(--dim); font-size:12px; display:flex; align-items:center; gap:4px; }
+  .sp input:not([type=checkbox]), .sp select { background:#2a3340; color:var(--tx); border:0; border-radius:6px; padding:6px 8px; font:14px system-ui,sans-serif; }
+  #bmsTile.bad .v { color:var(--err); }
   /* --- mode banc (le moteur tourne SEUL) --- */
   .bench { background:var(--card); border-radius:8px; padding:14px; border:1px solid #3a2a2a; }
   .bench .warn { background:#3a1f1c; border-radius:6px; padding:8px 12px; margin-bottom:12px; font-size:13px; }
@@ -92,6 +102,7 @@
   <button id="btnConnect">Connecter (BLE)</button>
   <button id="btnDisconnect" class="sec" disabled>Déconnecter</button>
   <button id="btnTrainer" class="sec">Connecter home trainer</button>
+  <button id="btnBms" class="sec" title="BMS Jiabaida en BLE (service ff00) : tension et courant batterie réels — indispensable sous firmware stock, où le display ne remonte que le courant phase">Connecter BMS JBD</button>
   <button id="btnRec" class="sec" disabled>● Enregistrer</button>
   <button id="btnDl" class="sec" disabled>Télécharger JSONL</button>
   <button id="btnStats" class="sec" disabled>Copier stats</button>
@@ -139,6 +150,7 @@
   <div class="tile"><div class="l">ADC torque</div><div class="v" id="vTorque">–</div><div class="u" id="vTorqueU">brut (vide 120–250)</div></div>
   <div class="tile"><div class="l">Torque delta</div><div class="v" id="vDelta">–</div><div class="u">ADC</div></div>
   <div class="tile"><div class="l">Cadence</div><div class="v" id="vCad">–</div><div class="u">rpm</div></div>
+  <div class="tile"><div class="l">Cadence estimée</div><div class="v" id="vCadEst">–</div><div class="u" id="vCadEstU">rpm (vitesse × braquet)</div></div>
   <div class="tile"><div class="l">Duty cycle</div><div class="v" id="vDuty">–</div><div class="u">% (remonté moteur)</div></div>
   <div class="tile"><div class="l">Vitesse rotor</div><div class="v" id="vErps">–</div><div class="u">ERPS</div></div>
   <div class="tile"><div class="l">Angle FOC</div><div class="v" id="vFoc">–</div><div class="u"></div></div>
@@ -146,6 +158,7 @@
   <div class="tile"><div class="l">Puissance batt.</div><div class="v" id="vPow">–</div><div class="u">W (via 0x02)</div></div>
   <div class="tile" id="trainerTile"><div class="l">Puissance roue</div><div class="v" id="vPmeca">–</div><div class="u" id="vTrainerSrc">home trainer</div></div>
   <div class="tile"><div class="l">Ratio roue/batt.</div><div class="v" id="vRatio">–</div><div class="u">inclut l'apport cycliste</div></div>
+  <div class="tile" id="bmsTile"><div class="l">Puissance batt. (BMS)</div><div class="v" id="vBms">–</div><div class="u" id="vBmsU">V · A réels (BMS JBD)</div></div>
   <div class="tile"><div class="l">Tension moteur</div><div class="v" id="vVolt">–</div><div class="u">V (remontée moteur)</div></div>
   <div class="tile" id="aweTile"><div class="l">Assist w/ error</div><div class="v" id="vAwe">–</div><div class="u">🔴 à couper avant la route</div></div>
   <div class="tile" id="streetTile"><div class="l">Street mode</div><div class="v" id="vStreet">–</div><div class="u" id="vStreetLim"></div></div>
@@ -154,6 +167,19 @@
   <div class="tile"><div class="l">Période roue brute</div><div class="v" id="vTickRaw">–</div><div class="u">ticks de 2,04 ms (avant clamp)</div></div>
   <div class="tile" id="uartTile"><div class="l">Trames 0x43</div><div class="v" id="vUart">–</div><div class="u">ok / somme KO / err UART (roulants)</div></div>
   <div class="tile"><div class="l">Trame 0x46</div><div class="v" id="vF46" style="font-size:12px;word-break:break-all">–</div><div class="u" id="vF46U">brute (paquet 0x08)</div></div>
+  <!-- RD45 en STOCK (preset RD45 + protocole stock) : bloc 0x46 décodé (decodeF46). Masquées sinon ; les « v4 » exigent le patch ≥ 4. -->
+  <div class="tile" id="tPatch" hidden><div class="l">Patch</div><div class="v" id="vPatch">–</div><div class="u" id="vPatchU">octet mode TX14</div></div>
+  <div class="tile" id="tVSens" hidden><div class="l">Vitesse capteur</div><div class="v" id="vVSens">–</div><div class="u" id="vVSensU">km/h (4293/p)</div></div>
+  <div class="tile" id="tRej" hidden><div class="l">Rejets capteur</div><div class="v" id="vRej">–</div><div class="u" id="vRejU">/ min glissante (n_bad)</div></div>
+  <div class="tile" id="tCurM" hidden><div class="l">Courant moteur</div><div class="v" id="vCurM">–</div><div class="u" id="vCurMU">brut TX18-19, à étalonner BMS</div></div>
+  <div class="tile" id="tTq" hidden><div class="l">Couple net</div><div class="v" id="vTq">–</div><div class="u">TX22 = (couple − zéro) ≫ 4</div></div>
+  <div class="tile" id="tTq10" hidden><div class="l">Couple 10 bits</div><div class="v" id="vTq10">–</div><div class="u">capteur brut (v4)</div></div>
+  <div class="tile" id="tCadS" hidden><div class="l">Cadence capteur</div><div class="v" id="vCadS">–</div><div class="u" id="vCadSU">imp/s (compteur mod 127, v4)</div></div>
+  <div class="tile" id="tFw" hidden><div class="l">Roue libre</div><div class="v" id="vFw">–</div><div class="u">bascules/s du bit 7 (v4)</div></div>
+  <div class="tile" id="tSTemp" hidden><div class="l">Temp. capteur</div><div class="v" id="vSTemp">–</div><div class="u">6 bits bruts (v4)</div></div>
+  <div class="tile" id="tHallS" hidden><div class="l">Hall (RD45)</div><div class="v" id="vHallS">–</div><div class="u" id="vHallSU">Hall_Speed (v4)</div></div>
+  <div class="tile" id="tPages" hidden style="grid-column:span 2"><div class="l">Pages du patch (v4) — dernière valeur · âge</div><table class="pages" id="vPages"></table></div>
+  <div class="tile" id="gpsTile" hidden><div class="l">GPS</div><div class="v" id="vGps">–</div><div class="u" id="vGpsU">km/h · écart display/GPS</div></div>
   <div class="tile"><div class="l">Niveau assist</div><div class="v" id="vLvl">–</div><div class="u" id="vMode"></div></div>
   <div class="tile"><div class="l">Hall</div><div class="v" id="vHall">–</div><div class="u">état 1–6</div></div>
   <div class="tile" id="errTile"><div class="l">Erreurs</div><div class="v" id="vErr">–</div><div class="u" id="vErrBits"></div></div>
@@ -172,6 +198,23 @@
       <button id="btnProtoA">▶ Phase A — moteur seul, chaîne déposée (~2 min)</button>
       <button id="btnProtoB">▶ Phase B — banc en charge (~4 min)</button>
       <button id="btnProtoC">▶ Phase C — pédalage humain (~3 min 30)</button>
+    </div>
+    <div class="bar" style="margin:4px 0 6px">
+      <button id="btnProtoS" style="background:#6b3fa0">▶ Phase S — niveau × vitesses, pédalage (stock ou OSF, ~5 min)</button>
+      <label class="sp">mode <select id="sMode">
+        <option value="grid">grille vitesses (charge du panneau)</option>
+        <option value="calib">étalonnage L0 en ERG (paliers W)</option></select></label>
+      <label class="sp">niveau <select id="sLvl"><option value="auto">courant (display)</option>
+        <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+      <label class="sp">paliers km/h <input id="sSpeeds" size="11" value="10,14,18,22"></label>
+      <label class="sp" id="sErgLbl" title="mode étalonnage : puissances ERG imposées, aux vitesses de la liste « étalonnage »">ERG W <input id="sErgs" size="14" value="100,150,200,250"> à <input id="sCalSpeeds" size="5" value="18,22"> km/h</label>
+      <label class="sp">braquet <input id="sChainring" size="2" value="44"> / <input id="sCog" size="2" value="14"></label>
+      <label class="sp">circ. mm <input id="sCirc" size="4" value="2050"></label>
+      <label class="sp"><input type="checkbox" id="sCut"> + coupure 20→26</label>
+    </div>
+    <div class="bar" style="margin:4px 0 6px">
+      <button id="btnProtoR" style="background:#a0553f">▶ Phase R — capteurs RD45 (roue en l'air, ~5 min)</button>
+      <label class="sp" title="Optionnel : cadence réellement tenue en R2 (pédalage à vide), pour convertir les impulsions/s du compteur capteur en impulsions par tour (patch v4)">cadence R2 <input id="rCad" size="3" placeholder="rpm" inputmode="numeric"> rpm</label>
     </div>
     <div class="hint">
       Les deux phases pilotent le moteur par le <b>mode banc</b> : aucun pédalage,
@@ -194,7 +237,29 @@
       l'assistance. Prérequis vérifiés au départ : mode <b>torque</b>, street
       <b>OFF</b>, niveau <b>0</b>, mode banc désarmé, capteur de vitesse branché.<br>
       L'enregistrement JSONL démarre et se télécharge automatiquement (champ
-      <code>bset</code> = consigne envoyée).
+      <code>bset</code> = consigne envoyée).<br>
+      <b style="color:#b78cff">S</b> = <b>caractérisation niveau × vitesse</b> en pédalage,
+      mode normal, <b>stock OU OSF</b> (aucun mode banc) : <b>un run = un niveau</b>, paliers de
+      vitesse tenus <b>30 s stables</b> (±1 km/h, sortie &gt; 2 s = chrono à zéro, bip et
+      avance automatique) à <b>charge figée</b> = la consigne du panneau « Home trainer »
+      (série 1 : résistance 100 %, jamais ERG — la charge doit croître avec la vitesse).
+      Cadence estimée depuis la vitesse et le braquet (44/14, 2 050 mm → 10 km/h = 26 rpm,
+      22 km/h = 57 rpm). Street <b>ON</b> comme vendu. Ordre d'une séance : <b>étalonnage L0 en
+      ERG</b> (paliers de puissance à vitesse fixe : à L0 la puissance roue est 100 % cycliste,
+      donc chaque palier donne un point couple ADC ↔ N·m ; sans moteur l'ERG est stable — à
+      résistance fixe le couple L0 serait le MÊME à toutes les vitesses, un seul point), puis
+      la <b>grille L0, L1→L5</b> à résistance figée, et <b>L0 refait en fin de séance</b>. Sous stock, <code>cur</code> = courant <b>phase</b> et
+      <code>pow</code> n'est pas la puissance batterie : <b>connectez le BMS JBD</b> pour avoir
+      la puissance batterie réelle (<code>pbat</code>) dans le JSONL. Fichier
+      <code>…_banc-protoS-L&lt;n&gt;.jsonl</code>, <code>stp</code> = palier, <code>stb</code> = 1 dans la
+      fenêtre stable, médianes par palier dans la ligne <code>meta</code>.<br>
+      <b style="color:#e08a6a">R</b> = <b>cycle capteurs RD45</b> (moteur roue, firmware <b>stock</b> + patch Syklo
+      speedfix v3/v4) : vélo sur pied, <b>roue arrière en l'air</b>, aucun trainer ni BMS. L'opérateur est
+      guidé et fait les réglages <b>sur le display</b> (niveau, Max speed, marche) : repos, pédales en
+      arrière, pédalage à vide, appuis pédale, marche, 6 démarrages, 4 paliers Max speed (20/25/32/36), arrêt
+      / reprise. Verdict <b>par organe</b> (cassette/cadence, couple, vitesse, Hall + moteur, chaîne couple →
+      courant, timeouts, UART) ; les critères qui n'existent qu'en patch v4 donnent « n/a » en v3, jamais KO.
+      Fichier <code>…_banc-protoR.jsonl</code>, <code>stp</code> = R0…R7 (R6-20…R6-36 pour les paliers).
     </div>
   </div>
   <div id="protoRun" hidden>
@@ -214,6 +279,7 @@
     <div class="proto-instr" id="pInstr"></div>
     <div id="pWait" class="proto-wait" hidden></div>
     <div class="bar" style="margin-top:10px">
+      <button id="btnProtoRedo" class="sec" hidden>↻ Refaire le palier</button>
       <button id="btnProtoSkip" class="sec">Étape suivante ▸</button>
       <button id="btnProtoAbort" class="sec">✕ Abandonner</button>
     </div>
@@ -359,6 +425,19 @@ let cfg = {};                // dernier état config connu (fusion des sous-tram
 const hist = []; const HIST_MS = 60000;
 const MOTORS = { 0:'Z2', 1:'Z8 48V', 2:'RD45', 3:'Z8 36V', 4:'Z8-OSF 48V', 5:'Z8-OSF 36V' };
 const MODES  = { 0:'power', 1:'torque', 2:'cadence', 3:'eMTB', 4:'hybrid' };
+
+/* RD45 (contrôleur Tongsheng KZQWA56, firmware stock + patch Syklo « speedfix ») —
+   constantes du décodage du bloc 0x46 relayé par le paquet 0x08 (decodeF46, plus bas).
+   RD45_CUR_K : ampères par LSB du courant moteur TX18-19 (AV_Current_FB × 2,5). Inconnu
+   tant qu'il n'a pas été étalonné contre le BMS → null = la tuile affiche le brut. */
+const RD45_CUR_K = null;
+/* Échelles DÉDUITES de la RE (analyses/codes-erreur-kzqwa56.md §7, ADC référencé 5,0 V), à étalonner :
+   AV_Current_FB ≈ 447 counts/A → TX18-19 (× 2,5) ≈ 1 118 counts/A ; V_Dc ≈ 46,8 counts/V (page 0 = V_Dc >> 4). */
+const RD45_CUR_K_DED = 1/1118;                            // A par LSB TX18-19, déduit — utilisé si RD45_CUR_K est null
+const RD45_VDC_K = 46.8;                                  // counts de V_Dc par volt
+const RD45_PERIM = 2.2;                                   // périmètre roue (m) pour p / est → km/h
+const RD45_K_P   = 3.6*RD45_PERIM*1000/(9*0.205);         // km/h = K/p   (p en pas de 205 µs, 9 impulsions/tour) ≈ 4293
+const RD45_K_EST = 3.6*RD45_PERIM*1000/2;                 // km/h = K/est (est = T_roue/2, LSB 2 ms, = tickRaw) = 3960
 
 /* Bitfield d'erreurs du moteur (ebike_app.h du firmware OSF 860C) et code
    affiche par le SW102 sur le chemin Z8-OSF (screen_main.c / screen_boot.c).
@@ -522,18 +601,184 @@ function handle06(dv) {
 }
 
 let lastCad = 0;   // derniere cadence vue (cibles en direct de la phase C)
+let lastSpdX10 = 0, lastVoltX10 = 0, lastTorque = 0, lastCur = 0;   // derniers champs vus (guidage phase S)
 
 // Paquet 0x08 (display >= 2.18.x-rd45log, 2 Hz) : [1]=seq, [2..16]=15 octets bruts de la
 // derniere trame 0x46 du controleur RD45 (contenu inconnu, logge tel quel), [17]=age en
 // unites de 100 ms depuis la derniere 0x46 (255 = jamais), [18]=compteur roulant.
 let lastF46 = null;
 function handle08(dv) {
-  let hex = '';
-  for (let i = 2; i <= 16; i++) hex += dv.getUint8(i).toString(16).padStart(2, '0');
+  let hex = ''; const bytes = [];
+  for (let i = 2; i <= 16; i++) { const b = dv.getUint8(i); bytes.push(b); hex += b.toString(16).padStart(2, '0'); }
   // [19] (display >= 2.18.10-rd45log build 2) : longueur reelle de la trame 0x46 (Tongsheng
   // annonce 6 octets ; le firmware clot la capture des qu'un 0x43 arrive apres >= 6 octets).
   lastF46 = { hex, age: dv.getUint8(17), n: dv.getUint8(18), seq: dv.getUint8(1),
-              len: dv.byteLength >= 20 ? dv.getUint8(19) : null };
+              len: dv.byteLength >= 20 ? dv.getUint8(19) : null, dec: decodeF46(bytes) };
+  rd45Track(lastF46);      // compteurs glissants (rejets, cadence, roue libre, pages) sur trame nouvelle
+  renderF46(); renderRd45(null);
+}
+
+/* ---------------------------------------------------------------------------
+   RD45 — DÉCODAGE DU BLOC 0x46 (2026-09-21)
+
+   Le display en protocole STOCK relaie dans le 0x08 les 15 octets TX[9..23] du bloc TX du
+   contrôleur : f46[0] = 0x46 (en-tête), f46[i] = TX[9+i], f46[14] = somme 8 bits de
+   TX[9..22] (= f46[0..13], en-tête compris). Indices ci-dessous = f46[k] du paquet BLE.
+   ⚠ Le décodeur Python de référence (chantier-rd45-firmware/patch/decode_f46_patch.py)
+   SAUTE l'en-tête : son f46[i] est notre f46[i+1].
+
+   Commun (écrit par le stock, patché ou non) :
+     f46[9..10] TX18-19 courant moteur u16 LE (AV_Current_FB × 2,5, unité à étalonner : RD45_CUR_K)
+     f46[13]    TX22 couple net = (couple − zéro) >> 4
+     f46[5]     TX14 octet mode : bit 7 = FIX actif, bits 0-6 = version du patch (0 = stock non patché)
+   v3 (mode 0x03 / 0x83) :
+     f46[1..2]  SPA/SPB brut LE : bit 15 = niveau, bits 0-14 = p = période d'impulsion capteur
+                (pas de 205 µs, 9 impulsions/tour, 4500 = arrêt)
+     f46[3..4]  est u16 LE = T_roue/2 en LSB 2 ms (= tickRaw du 0x04 en FIX ; ≥ 1750 = 0 km/h)
+     f46[6]     bits 0-3 rejets capteur mod 16 (n_bad), bits 4-7 étendue/8 des 16 dernières périodes
+     f46[7..8]  période stock brute speed_bike u16 LE (même unité que est : montre le repliement > 30 km/h)
+   v4 (mode 0x04 / 0x84) :
+     f46[1]     octet 3 brut capteur Kclamber : bit 7 = inversion roue libre (bascule à chaque
+                transition, 18/tour de roue libre), bits 0-6 = compteur d'impulsions de pédalage
+                (1..127 puis 1 ; n'avance pas en pédalage arrière)
+     f46[2]     octet 1 brut capteur : bits 7-2 température capteur (6 bits), bits 1-0 = couple bits 9-8
+     f46[3]     octet 2 brut capteur = couple bits 7-0  → couple 10 bits = ((f46[2] & 3) << 8) | f46[3]
+     f46[4]     valeur de la page ; f46[6] bits 0-3 n_bad, bits 4-7 index de page (table F46_PAGES)
+     f46[7..8]  Hall_Speed u16 LE (vitesse moteur sur les Hall ; rapport Hall_Speed / km/h = constante)
+--------------------------------------------------------------------------- */
+/* Pages v4 (layout figé le 2026-09-21) : une page toutes les ~130 ms → chaque page ≈ toutes les 2 s.
+   `bits` = libellé des bits de drapeaux (RE analyses/codes-erreur-kzqwa56.md §3-4) ; « silencieux » =
+   jamais lu par le stock ou sans code : blocage rotor (page 4 b2), capteur de couple (page 12 b2, latché →
+   bascule silencieuse sur l'assistance à la cadence), capteur vitesse (page 3 b5). */
+const F46_PAGES = [
+  {i:0,  lbl:'V_Dc ≫ 4',                 u:'tension bus : ×16 / 46,8 ≈ V (déduit), à comparer à la tension display', mul:16, volt:true},
+  {i:1,  lbl:'POT_temp ≫ 4',             u:'poignée (ADC)',                mul:16},
+  {i:2,  lbl:'flags0 bits 24-31',        u:'drapeaux',                     bin:true,
+         bits:{1:'surchauffe NTC (b25)', 2:'TRAP étage de puissance (b26)', 3:'surtension batterie (b27)', 4:'sous-tension batterie (b28)'}},
+  {i:3,  lbl:'flags1 bits 16-23',        u:'drapeaux',                     bin:true,
+         bits:{2:'poignée (b18)', 4:'comm display (b20, jamais posé)', 5:'capteur vitesse (b21, silencieux)', 6:'frein au démarrage (b22)', 7:'Hall moteur (b23)'}},
+  {i:4,  lbl:'flags1 bits 0-7',          u:'drapeaux',                     bin:true,
+         bits:{2:'BLOCAGE ROTOR (b2, silencieux)', 5:'b5 (jamais posé)'}},
+  {i:5,  lbl:'speed_limit_current ≫ 4',  u:'consigne max dégressivité : 600 = bride, 1800 = plein', mul:16},
+  {i:6,  lbl:'data_lj_zero ≫ 2',         u:'zéro couple appris',           mul:4},
+  {i:7,  lbl:'étendue 16 périodes',      u:'max − min, pas de 205 µs, saturé 255'},
+  {i:8,  lbl:'temp. contrôleur ≫ 4',     u:'ADC',                          mul:16},
+  {i:9,  lbl:'Δ compteur cadence',       u:'sur 10 trames capteur (≈ 100-120 ms)'},
+  {i:10, lbl:'réservé',                  u:'0'},
+  {i:11, lbl:'réservé',                  u:'0'},
+  {i:12, lbl:'system_state_lj_flag',     u:'drapeaux',                     bin:true,
+         bits:{0:'zéro couple acquis (b0)', 2:'CAPTEUR DE COUPLE DÉFAILLANT (b2, latché, silencieux → assistance cadence)'}},
+];
+// Codes d'erreur stock KZQWA56 (octet 5 de la trame 0x43 → `err` en STOCK/RD45) : tout code ≠ 0 pendant 3 s
+// → moteur coupé et redémarrage refusé. Codes « inattendus » : jamais émis par la base V1.0.1.
+const RD45_ERR = { 1:'surchauffe contrôleur (inattendu en V1.0.1)', 2:'défaut étage de puissance (TRAP)', 3:'(réservé, inattendu)',
+  4:'poignée d’accélérateur', 5:'frein actionné au démarrage', 7:'(réservé, inattendu)', 8:'sous-tension batterie',
+  9:'surtension batterie', 10:'capteurs Hall moteur', 11:'communication display (jamais posé, inattendu)', 14:'perte de phase / 12 V (inattendu)' };
+const rd45ErrTxt = c => 'code '+c+' — '+(RD45_ERR[c] || 'code inconnu (base firmware ?)');
+const f46Pages = {};                  // index de page → {v, t} (dernière valeur vue et son instant)
+const rCadD = (a, b) => { let d = (b - a + 127) % 127; return d > 63 ? d - 127 : d; };   // Δ signé du compteur 1..127
+
+function decodeF46(b) {
+  if (!b || b.length < 15 || b[0] !== 0x46) return { ver:null };
+  let s = 0; for (let i = 0; i < 14; i++) s += b[i];
+  const mode = b[5], ver = mode & 0x7f, fix = mode >> 7;
+  const r = { ver, fix, ok:(s & 0xff) === b[14], cur:b[9] | (b[10] << 8), tq:b[13], nbad:b[6] & 15 };
+  if (ver === 0) return r;                                   // stock non patché : le reste vaut 0
+  if (ver < 4) {                                             // v3 : SPA/SPB, est, étendue, période stock
+    const raw = b[1] | (b[2] << 8);
+    r.p = raw & 0x7fff; r.plvl = raw >> 15; r.est = b[3] | (b[4] << 8);
+    r.spread = (b[6] >> 4) * 8; r.stockP = b[7] | (b[8] << 8);
+    r.kmhP = r.p > 0 && r.p < 4500 ? RD45_K_P / r.p : 0;
+    r.kmhEst = r.est > 0 && r.est < 1750 ? RD45_K_EST / r.est : 0;
+    r.kmhStock = r.stockP > 0 && r.stockP < 1750 ? RD45_K_EST / r.stockP : 0;
+  } else {                                                   // v4 : capteur Kclamber brut, pages, Hall
+    r.fw = b[1] >> 7; r.cad = b[1] & 0x7f; r.stemp = b[2] >> 2; r.tq10 = ((b[2] & 3) << 8) | b[3];
+    r.pv = b[4]; r.pg = b[6] >> 4; r.hall = b[7] | (b[8] << 8);
+  }
+  return r;
+}
+const f46HexBytes = hex => (String(hex).replace(/\s+/g, '').match(/../g) || []).map(h => parseInt(h, 16));
+
+// Champs décodés compacts du JSONL (préfixe r_), à côté du f46 brut conservé tel quel.
+function rFields() {
+  const f = lastF46 && lastF46.dec; if (!f || f.ver == null) return {};
+  const o = { r_ver:f.ver, r_fix:f.fix, r_cur:f.cur, r_tq:f.tq }; if (f.ver === 0) return o;
+  o.r_nbad = f.nbad;
+  if (f.ver < 4) { o.r_p = f.p; o.r_est = f.est; o.r_stock = f.stockP; o.r_spread = f.spread; }
+  else { o.r_tq10 = f.tq10; o.r_cad = f.cad; o.r_fw = f.fw; o.r_stemp = f.stemp; o.r_hall = f.hall; o.r_pg = f.pg; o.r_pv = f.pv; }
+  return o;
+}
+
+const isRd45 = () => isStock() && motorSrc != null && (motorSrc >> 4) === 2;   // stock ET preset display RD45
+const RD45_IDS = ['tPatch','tVSens','tRej','tCurM','tTq'], RD45_V4_IDS = ['tTq10','tCadS','tFw','tSTemp','tHallS','tPages'];
+const rd45Live = { prevN:null, prevF:null, rej:[], cadH:[], cadPps:0, fwPs:0, rejMin:0, tickRaw:null };
+function rPatchTxt(f) { return !f || f.ver == null ? 'inconnu' : f.ver === 0 ? 'stock (non patché)' : (f.fix ? 'FIX' : 'DIAG') + ' v' + f.ver; }
+
+// Sur chaque trame 0x46 NOUVELLE (compteur n du 0x08) : rejets / min glissante, cadence et
+// roue libre sur 2 s (v4), dernière valeur de chaque page avec son instant (v4).
+function rd45Track(F) {
+  const f = F.dec, L = rd45Live; if (!f || f.ver == null || F.n === L.prevN) return;
+  L.prevN = F.n; const now = Date.now(), pf = L.prevF; L.prevF = f;
+  if (f.ver > 0 && pf && pf.ver === f.ver) { const d = (f.nbad - pf.nbad + 16) % 16; if (d) L.rej.push({ t:now, n:d }); }
+  while (L.rej.length && now - L.rej[0].t > 60000) L.rej.shift();
+  L.rejMin = L.rej.reduce((a, x) => a + x.n, 0);
+  if (f.ver >= 4) {
+    if (f.pg != null) f46Pages[f.pg] = { v:f.pv, t:now };
+    L.cadH.push({ t:now, c:f.cad, fw:f.fw }); while (L.cadH.length > 1 && now - L.cadH[0].t > 2000) L.cadH.shift();
+    const h = L.cadH;
+    if (h.length > 1) { const dt = (h[h.length-1].t - h[0].t) / 1000; let cnt = 0, tog = 0;
+      for (let i = 1; i < h.length; i++) { cnt += Math.max(0, rCadD(h[i-1].c, h[i].c)); if (h[i].fw !== h[i-1].fw) tog++; }
+      L.cadPps = dt > 0 ? cnt / dt : 0; L.fwPs = dt > 0 ? tog / dt : 0; }
+  }
+}
+
+function renderF46() {
+  const F = lastF46, f = F && F.dec;
+  $('vF46').textContent = F ? F.hex.replace(/(..)/g, '$1 ').trim() : '–';
+  $('vF46U').textContent = F ? 'âge ' + (F.age === 255 ? '∞' : (F.age/10).toFixed(1) + ' s') + ' · n=' + F.n + (F.len != null ? ' · ' + F.len + ' o' : '')
+      + (f && f.ver != null ? ' · ' + rPatchTxt(f) + (f.ok ? '' : ' · somme KO') : ' · non décodée') : 'brute (paquet 0x08)';
+}
+
+// Tuiles RD45 : visibles seulement en STOCK + preset RD45 ; les tuiles v4 seulement avec le patch ≥ 4.
+function renderRd45(d) {
+  if (d && d.tickRaw !== undefined) rd45Live.tickRaw = d.tickRaw;
+  const on = isRd45(), f = lastF46 && lastF46.dec, v4 = !!(on && f && f.ver >= 4);
+  for (const id of RD45_IDS) $(id).hidden = !on;
+  for (const id of RD45_V4_IDS) $(id).hidden = !v4;
+  if (!on) return;
+  if (!f || f.ver == null) { $('vPatch').textContent = '–'; $('vPatchU').textContent = 'bloc 0x46 non décodé'; return; }
+  const kmh = (d ? d.spdX10 : lastSpdX10) / 10;
+  $('vPatch').textContent = rPatchTxt(f);
+  $('vPatchU').textContent = 'octet mode TX14 = 0x' + ((f.fix << 7) | f.ver).toString(16).padStart(2, '0') + (f.ok ? '' : ' · somme KO');
+  if (f.ver === 0) { $('vVSens').textContent = 'n/a'; $('vVSensU').textContent = 'sans patch : p / est absents'; $('vRej').textContent = 'n/a'; $('vRejU').textContent = 'sans patch'; }
+  else if (f.ver < 4) {
+    $('vVSens').textContent = f.kmhP.toFixed(1);
+    $('vVSensU').textContent = '4293/p (p ' + f.p + ') · est → ' + f.kmhEst.toFixed(1) + ' · stock → ' + f.kmhStock.toFixed(1) + ' · display ' + kmh.toFixed(1);
+  } else {
+    const tk = rd45Live.tickRaw, v = tk && tk < 1750 ? RD45_K_EST / tk : 0;
+    $('vVSens').textContent = v.toFixed(1); $('vVSensU').textContent = '3960/tickRaw (' + (tk ?? '–') + ') · display ' + kmh.toFixed(1);
+  }
+  if (f.ver > 0) { $('vRej').textContent = rd45Live.rejMin; $('vRejU').textContent = '/ min glissante · n_bad ' + f.nbad + (f.ver < 4 ? ' · étendue ' + f.spread : ''); }
+  if (RD45_CUR_K != null) { $('vCurM').textContent = (f.cur * RD45_CUR_K).toFixed(1); $('vCurMU').textContent = 'A (brut ' + f.cur + ' × ' + RD45_CUR_K + ')'; }
+  else { $('vCurM').textContent = '≈ ' + (f.cur * RD45_CUR_K_DED).toFixed(1); $('vCurMU').textContent = 'A déduit (brut ' + f.cur + ' / 1 118), à étalonner BMS'; }
+  $('vTq').textContent = f.tq;
+  if (!v4) return;
+  $('vTq10').textContent = f.tq10;
+  $('vCadS').textContent = rd45Live.cadPps.toFixed(1);
+  $('vCadSU').textContent = 'imp/s · compteur ' + f.cad + (f46Pages[9] ? ' · Δ page 9 = ' + f46Pages[9].v : '');
+  $('vFw').textContent = rd45Live.fwPs.toFixed(1);
+  $('vSTemp').textContent = f.stemp;
+  $('vHallS').textContent = f.hall;
+  $('vHallSU').textContent = 'Hall_Speed' + (kmh >= 2 ? ' · ' + (f.hall / kmh).toFixed(1) + ' par km/h' : ' · rapport dès 2 km/h');
+  const now = Date.now();
+  $('vPages').innerHTML = F46_PAGES.map(pg => { const e = f46Pages[pg.i]; let val, note = pg.u;
+    if (!e) val = '–';
+    else if (pg.bin) { val = e.v.toString(2).padStart(8, '0');
+      const set = Object.keys(pg.bits || {}).filter(b => (e.v >> b) & 1).map(b => 'b' + b + ' ' + pg.bits[b]);
+      note = set.length ? '⚠ ' + set.join(' · ') : (e.v ? 'bit(s) non documenté(s)' : 'aucun drapeau'); }
+    else { val = e.v + (pg.mul ? ' (×' + pg.mul + ' = ' + e.v * pg.mul + ')' : '');
+      if (pg.volt) val += ' ≈ ' + (e.v * 16 / RD45_VDC_K).toFixed(1) + ' V' + (lastVoltX10 ? ' · display ' + (lastVoltX10 / 10).toFixed(1) + ' V' : ''); }
+    return '<tr><td>' + pg.i + '</td><td>' + pg.lbl + '</td><td' + (pg.bin && e && e.v ? ' style="color:var(--warn)"' : '') + '>' + val + '</td><td>' + (e ? ((now - e.t) / 1000).toFixed(1) + ' s' : '') + '</td><td>' + note + '</td></tr>'; }).join('');
 }
 
 let lastPkt = 0;   // watchdog : dernier paquet 0x04 recu
@@ -556,20 +801,31 @@ function handle04(dv) {
     $('vTickRaw').textContent=d.tickRaw; $('vUart').textContent=d.frOk+' / '+d.ckErr+' / '+d.commErr;
     $('uartTile').classList.toggle('bad', d.ckErr>0 || d.commErr>0);
   } else { $('vSpdRaw').textContent='n/a'; $('vTickRaw').textContent='n/a'; $('vUart').textContent='n/a'; }
-  $('vF46').textContent = lastF46 ? lastF46.hex.replace(/(..)/g,'$1 ').trim() : '–';
-  $('vF46U').textContent = lastF46 ? 'âge '+(lastF46.age===255?'∞':(lastF46.age/10).toFixed(1)+' s')+' · n='+lastF46.n+(lastF46.len!=null?' · '+lastF46.len+' o':'') : 'brute (paquet 0x08)';
+  renderF46(); renderRd45(d);
   $('vPkts').textContent=pkts; $('vLost').textContent=lost;
   // en stock, err est le CODE d'erreur Tongsheng, pas le bitfield OSF
-  $('vErr').textContent = d.err ? (na ? 'code '+d.err
+  // RD45 : codes KZQWA56 nommés (RD45_ERR) ; autre stock : code brut
+  $('vErr').textContent = d.err ? (na ? (isRd45() ? rd45ErrTxt(d.err) : 'code '+d.err)
       : errList(d.err).map(b=>b.code).join(' ') || '0x'+d.err.toString(16)) : 'OK';
-  $('vErrBits').textContent = d.err ? (na ? 'code stock Tongsheng (≠ bitfield OSF)' : errTxt(d.err)) : '';
+  $('vErrBits').textContent = d.err ? (na ? (isRd45() ? 'code stock KZQWA56 · ≠ 0 pendant 3 s → moteur coupé, redémarrage refusé' : 'code stock Tongsheng (≠ bitfield OSF)') : errTxt(d.err)) : '';
   $('errTile').classList.toggle('bad', !!d.err);
   lastCad = d.cad;
+  lastSpdX10 = d.spdX10; lastVoltX10 = d.voltX10; lastTorque = d.torque; lastCur = d.cur;
+  // cadence estimée depuis la vitesse et le braquet (phase S) : seule cadence disponible en stock,
+  // et sous OSF un contrôle du braquet saisi (doit coller à `cad` à ±5 %)
+  $('vCadEst').textContent = d.spdX10 ? cadEst(d.spdX10).toFixed(0) : '0';
   hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps, err:d.err, pmeca:pmeca??0});
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
   // bset = consigne de duty envoyée en mode banc, pour corréler consigne / duty remonté
-  if (recording) { log.push({ t:now, stp:(proto?proto.curId:undefined), bset:(bench&&bench.running)?Math.round(bench.sentD):undefined, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d,
-      ...(lastF46 ? { f46:lastF46.hex, f46age:lastF46.age, f46n:lastF46.n, f46len:lastF46.len } : {}) }); $('recInfo').textContent = log.length+' échantillons'; }
+  // stb = 1 pendant une fenêtre stable de la phase S ; vbat/ibat/pbat = BMS JBD (si connecté, < 3 s)
+  // t = temps reconstruit sur seq quand les paquets arrivent en rafale (tr = 1, ta = réception réelle) ;
+  // r_* = bloc 0x46 décodé (RD45) ; gpsX10 / gpsAcc = dernier fix GPS (≤ 3 s) — voir « FIABILITÉ SUR ANDROID »
+  const ts = recStamp(now, d.seq);
+  if (recording) { recPush({ t:ts.t, ...(ts.tr ? { tr:1, ta:now } : {}), stp:(proto?proto.curId:undefined), stb:(proto&&proto.phase==='S'&&proto.stableSince)?1:undefined,
+      bset:(bench&&bench.running)?Math.round(bench.sentD):undefined, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d,
+      ...sBmsFields(now),
+      ...(lastF46 ? { f46:lastF46.hex, f46age:lastF46.age, f46n:lastF46.n, f46len:lastF46.len } : {}),
+      ...rFields(), ...gpsFields(now) }, ts); $('recInfo').textContent = log.length+' échantillons'+recWarnTxt(); }
   if (proto) protoSample(d, now);
 }
 
@@ -840,6 +1096,71 @@ $('btnTrainer').onclick = async () => {
     $('vTrainerSrc').textContent = 'erreur : ' + e.message;
     $('btnTrainer').textContent = 'Connecter home trainer'; $('btnTrainer').className = 'sec';
   }
+};
+
+/* ---------------------------------------------------------------------------
+   BMS JBD (Jiabaida) — PUISSANCE BATTERIE RÉELLE (2026-09-17)
+
+   Sous firmware STOCK, le display ne remonte pas le courant batterie : `cur` est le
+   courant PHASE (établi le 2026-09-17 : display 33-35 A quand le BMS voit 23,7 A),
+   `pow` est calculé par le display à partir de ce courant phase (gonflé ×1,4-1,5) et
+   `voltX10` est la tension compensée I×R_pack (`battery_voltage_soc_x10`). La seule
+   mesure batterie fiable vient donc du BMS lui-même — 3e connexion GATT, indépendante
+   du display et du trainer, lecture seule.
+
+   Protocole (le même que SykloConnect, shared/ble-specs/ble-commands.md) : service
+   ff00, commande `DD A5 03 00 FF FD 77` écrite sur ff02, réponse sur ff01
+   `DD 03 00 <len> <data…> <ck ck> 77` avec data[0-1] = tension u16 BE ×10 mV,
+   data[2-3] = courant s16 BE ×10 mA (+ = charge, − = décharge), data[19] = SOC %.
+   La réponse (34 o) arrive en morceaux BLE de 20 o → réassemblage sur la longueur
+   annoncée, resynchronisation sur l'en-tête 0xDD. Interrogation 1 Hz.
+--------------------------------------------------------------------------- */
+const BMS_SVC='0000ff00-0000-1000-8000-00805f9b34fb', BMS_NOTIFY='0000ff01-0000-1000-8000-00805f9b34fb', BMS_WRITE='0000ff02-0000-1000-8000-00805f9b34fb';
+const BMS_CMD03=Uint8Array.of(0xDD,0xA5,0x03,0x00,0xFF,0xFD,0x77);
+let bmsDev=null, bmsWrite=null, bmsBuf=[], bmsTimer=null, bms=null;   // bms = {v, i, p, soc, t}
+function bmsReset(){
+  bms=null; bmsBuf=[]; if(bmsTimer){ clearInterval(bmsTimer); bmsTimer=null; } bmsWrite=null; bmsDev=null;
+  $('vBms').textContent='–'; $('vBmsU').textContent='V · A réels (BMS JBD)'; $('bmsTile').classList.remove('bad');
+  $('btnBms').textContent='Connecter BMS JBD'; $('btnBms').className='sec';
+}
+function bmsOnNotify(ev){
+  const dv=ev.target.value; for(let i=0;i<dv.byteLength;i++) bmsBuf.push(dv.getUint8(i));
+  for(;;){
+    while(bmsBuf.length && bmsBuf[0]!==0xDD) bmsBuf.shift();      // resynchro sur l'en-tête
+    if(bmsBuf.length<4) return;
+    const len=bmsBuf[3], tot=4+len+3;
+    if(bmsBuf.length<tot) return;
+    const f=bmsBuf.slice(0,tot); bmsBuf=bmsBuf.slice(tot);
+    if(f[tot-1]!==0x77){ bmsBuf=f.slice(1).concat(bmsBuf); continue; }   // faux en-tête : on glisse d'un octet
+    if(f[1]!==0x03 || f[2]!==0x00 || len<8) continue;
+    const v=((f[4]<<8)|f[5])/100; let i=(f[6]<<8)|f[7]; if(i>32767) i-=65536; i=-i/100;   // décharge positive
+    bms={v, i, p:v*i, soc:len>19?f[4+19]:null, t:Date.now()};
+    $('vBms').textContent=bms.p.toFixed(0);
+    $('vBmsU').textContent=v.toFixed(2)+' V · '+i.toFixed(2)+' A'+(bms.soc!=null?' · SOC '+bms.soc+' %':'');
+    $('bmsTile').classList.toggle('bad', v>0 && v<43);
+  }
+}
+// champs JSONL (vides si BMS absent ou muet depuis > 3 s)
+function sBmsFields(now){ return (bms && now-bms.t<3000) ? {vbat:+bms.v.toFixed(2), ibat:+bms.i.toFixed(2), pbat:+bms.p.toFixed(1)} : {}; }
+$('btnBms').onclick=async()=>{
+  if(bmsDev){ try{ bmsDev.gatt.disconnect(); }catch(_){ bmsReset(); } return; }
+  try{
+    $('btnBms').textContent='Recherche…'; $('btnBms').className='sec busy';
+    const dev=await navigator.bluetooth.requestDevice({
+      filters:[{services:[BMS_SVC]},{namePrefix:'SYKLO'},{namePrefix:'JBD'},{namePrefix:'xiaoxiang'}],
+      optionalServices:[BMS_SVC] });
+    dev.addEventListener('gattserverdisconnected', bmsReset);
+    const gatt=await dev.gatt.connect();
+    const svc=await gatt.getPrimaryService(BMS_SVC);
+    const nt=await svc.getCharacteristic(BMS_NOTIFY);
+    await nt.startNotifications(); nt.addEventListener('characteristicvaluechanged', bmsOnNotify);
+    bmsWrite=await svc.getCharacteristic(BMS_WRITE); bmsDev=dev;
+    const poll=async()=>{ if(!bmsWrite) return;
+      try{ if(bmsWrite.properties.write) await bmsWrite.writeValue(BMS_CMD03); else await bmsWrite.writeValueWithoutResponse(BMS_CMD03); }catch(_){ } };
+    bmsTimer=setInterval(poll,1000); poll();
+    $('btnBms').textContent=(dev.name||'BMS')+' connecté'; $('btnBms').className='sec ok';
+    $('vBmsU').textContent='en attente de la trame 03…';
+  }catch(e){ bmsReset(); $('vBmsU').textContent='erreur : '+e.message; }
 };
 
 
@@ -1797,6 +2118,8 @@ function fmtT(sec){ sec=Math.max(0,Math.ceil(sec)); return Math.floor(sec/60)+':
 function protoTotal(steps,from,elapsed){ let t=0; for(let i=from;i<steps.length;i++) t+=steps[i].dur; return t-(elapsed||0); }
 
 function startProto(phase){
+  if(phase==='S') return startProtoS();   // pédalage, stock ou OSF, sans mode banc — moteur dédié plus bas
+  if(phase==='R') return startProtoR();   // capteurs RD45 en stock, roue en l'air — moteur dédié plus bas
   if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
   /* STOCK Tongsheng : pas de mode banc (le moteur ignore la consigne de duty,
      le display refuse d'ailleurs l'armement) et pas de delta/cadence/duty —
@@ -1893,6 +2216,8 @@ function protoDrive(st, el){
 
 function nextStep(){
   const p=proto; if(!p) return;
+  if(p.phase==='S') return nextStepS();
+  if(p.phase==='R') return nextStepR();
   if(p.idx>=0){ const st=p.steps[p.idx];
     const r = (st.rearm || p.samples.length) ? st.check(p.samples) : vATT('aucun échantillon');
     if(p.state==='skipped' && p.samples.length) r.d+=' (étape écourtée)';
@@ -1929,6 +2254,8 @@ function nextStep(){
 
 function protoSample(d,now){
   const p=proto, st=p.steps[p.idx]; if(!st) return;
+  if(p.phase==='S') return protoSampleS(d,now,st);
+  if(p.phase==='R') return protoSampleR(d,now,st);
   if(p.state==='waiting' && st.wait.cond(d)){
     p.state = st.settle ? 'settling' : 'running'; p.t0=now;
     if(!st.settle) $('pWait').hidden=true;
@@ -1942,6 +2269,8 @@ function protoSample(d,now){
 
 function protoTick(){
   const p=proto; if(!p) return;
+  if(p.phase==='S') return protoTickS();
+  if(p.phase==='R') return protoTickR();
   const st=p.steps[p.idx]; if(!st) return;
 
   /* Attente de rearmement : si la demande a expire (l'operateur laisse le
@@ -2032,6 +2361,8 @@ function protoTick(){
 }
 
 function endProto(aborted){
+  if(proto && proto.phase==='S') return endProtoS(aborted);
+  if(proto && proto.phase==='R') return endProtoR(aborted);
   const p=proto; proto=null; clearInterval(p.timer);
   // Ordre important : benchRec d'abord, sinon benchStop croit devoir clore
   // l'enregistrement et telecharge un JSONL en double.
@@ -2100,9 +2431,613 @@ $('btnProtoAbort').onclick=()=>{ if(proto) endProto(true); };
 $('btnProtoClose').onclick=()=>{ $('protoDone').hidden=true; $('protoIdle').hidden=false; };
 $('btnProtoCopy').onclick=async()=>{
   const lp=window._lastProto; if(!lp) return;
-  await navigator.clipboard.writeText(JSON.stringify({phase:lp.phase,config:cfg,verdict:lp.results},null,1));
+  const out = (lp.phase==='S'||lp.phase==='R') ? {config:cfg, ...lp} : {phase:lp.phase,config:cfg,verdict:lp.results};
+  await navigator.clipboard.writeText(JSON.stringify(out,null,1));
   $('pDoneTitle').textContent+=' — copié ✓';
 };
+$('btnProtoS').onclick=()=>startProto('S');
+$('btnProtoR').onclick=()=>startProto('R');
+$('btnProtoRedo').onclick=()=>{ const p=proto; if(!p) return;
+  if(p.phase==='R') return redoStepR();
+  if(p.phase!=='S') return;
+  p.samples=[]; p.stableSince=null; p.lastIn=0; p.acq=null; p.t0=Date.now(); beep(1); };
+
+/* ---------------------------------------------------------------------------
+   PHASE S — CARACTÉRISATION NIVEAU × VITESSE EN PÉDALAGE (2026-09-17)
+
+   But : constituer la base « loi d'assistance du firmware stock Tongsheng » (niveaux
+   1→5) pour la répliquer sous OSF (spec chantier-z8-osf/specs/protocole-S-… v3).
+   Aucun mode banc : l'OPÉRATEUR est piloté. Un run = UN niveau ; paliers de vitesse
+   tenus à charge figée (consigne du panneau trainer, résistance fixe en série 1 :
+   la charge croît avec la vitesse → équilibre stable ; en ERG la vitesse n'a pas de
+   rappel et s'emballe — vu le 2026-09-17).
+
+   Pourquoi la VITESSE comme grandeur pilote : à braquet fixe elle vaut exactement une
+   cadence (cadEst), et la charge du trainer ne dépend que d'elle → à (charge, vitesse)
+   égales la puissance roue `pmeca` est la même quel que soit le niveau : seul le
+   PARTAGE cycliste/moteur change. À L0, pmeca = 100 % cycliste → étalonnage du signal
+   `torque` en W à chaque vitesse ; aux autres niveaux, P_assist = pmeca − P_cycliste
+   (dépouillement : tools/protoS-report.py). Le BMS JBD, s'il est connecté, donne en
+   plus la puissance batterie réelle (pbat) — la grandeur du banc de certification.
+
+   Stabilité : fenêtre = `stable` s CONTINUES dans la bande ±`band` km/h au bon niveau ;
+   une sortie de plus de 2 s remet le chrono à zéro ; `max` s par palier, au-delà on
+   garde la dernière fenêtre si ≥ 10 s (ATTENTION) sinon KO. Bip + avance automatique
+   (mains occupées). Médianes de la fenêtre acquise → `results` de la ligne meta.
+--------------------------------------------------------------------------- */
+const S_KEY='protoS.v1';
+const S_DEF={mode:'grid', speeds:'10,14,18,22', ergs:'100,150,200,250', calSpeeds:'18,22', chainring:44, cog:14, circ:2050, band:1.0, stable:30, max:120, cut:false};
+let sGear={chainring:S_DEF.chainring, cog:S_DEF.cog, circ:S_DEF.circ};
+function sGearRead(){ return {chainring:+$('sChainring').value||44, cog:+$('sCog').value||14, circ:+$('sCirc').value||2050}; }
+function sLoad(){
+  let o={}; try{ o=JSON.parse(localStorage.getItem(S_KEY)||'{}'); }catch(_){}
+  const p={...S_DEF,...o};
+  $('sMode').value=p.mode||'grid'; $('sSpeeds').value=p.speeds; $('sErgs').value=p.ergs; $('sCalSpeeds').value=p.calSpeeds;
+  $('sChainring').value=p.chainring; $('sCog').value=p.cog; $('sCirc').value=p.circ; $('sCut').checked=!!p.cut;
+  sGear=sGearRead(); sModeUi();
+}
+function sModeUi(){ const c=$('sMode').value==='calib'; $('sErgLbl').style.opacity=c?'1':'.45'; $('sLvl').disabled=c; $('sCut').disabled=c; }
+$('sMode').onchange=sModeUi;
+function sParams(){
+  const g=sGearRead();
+  const p={ mode:$('sMode').value, speeds:$('sSpeeds').value, ergs:$('sErgs').value, calSpeeds:$('sCalSpeeds').value,
+            ...g, band:S_DEF.band, stable:S_DEF.stable, max:S_DEF.max, cut:$('sCut').checked };
+  try{ localStorage.setItem(S_KEY, JSON.stringify(p)); }catch(_){}
+  sGear=g; return p;
+}
+/* Cadence estimée (rpm) = vitesse ⇔ cadence à braquet fixe. Exacte tant que le capteur est
+   sur la roue : le display calcule sa vitesse avec la MÊME circonférence que celle saisie ici,
+   la vraie taille du pneu n'intervient pas. 44/14 × 2 050 mm → 2,587 rpm par km/h. */
+function cadEst(spdX10, g){ g=g||sGear; return spdX10/10*1000/60/(g.circ/1000)*g.cog/g.chainring; }
+['sChainring','sCog','sCirc'].forEach(id=>$(id).onchange=()=>{ sGear=sGearRead(); });
+sLoad();
+
+let audioCtx=null;
+function beep(n){
+  try{
+    audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+    for(let i=0;i<(n||1);i++){
+      const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+      o.connect(g); g.connect(audioCtx.destination); o.frequency.value=880; g.gain.value=0.25;
+      const t=audioCtx.currentTime+i*0.22; o.start(t); o.stop(t+0.14);
+    }
+  }catch(_){}
+}
+const med=a=>{ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2?s[m]:(s[m-1]+s[m])/2; };
+
+const numList=t=>String(t).split(/[,; ]+/).map(Number).filter(v=>v>0);
+function buildProtoS(lvl, p){
+  const steps=[{id:'S-L'+lvl+'-lvl', kind:'level', lvl, dur:0, title:'Niveau '+lvl+' au display',
+    instr:'Mettez le display au niveau <b>'+lvl+'</b> (▲/▼) et pédalez tranquillement — la suite part toute seule 3 s après que le display remonte le niveau.'}];
+  if(p.mode==='calib'){
+    /* ÉTALONNAGE L0 EN ERG : à chaque vitesse, paliers de puissance imposée par le trainer.
+       À L0 la puissance roue est 100 % cycliste → couple T = P/ω connu à chaque palier,
+       le signal `torque` s'étalonne (ADC ↔ N·m) sur une vraie plage de couple. Deux vitesses
+       pour vérifier que l'étalonnage ne dépend pas de la cadence. */
+    const speeds=numList(p.calSpeeds), ergs=numList(p.ergs);
+    for(const v of speeds) for(const w of ergs) steps.push({id:'S-L0-e'+w+'-v'+v, kind:'plateau', lvl:0, vT:v, erg:w, dur:p.stable,
+      title:'Étalonnage L0 — ERG '+w+' W à '+v+' km/h',
+      instr:'Le trainer impose <b>'+w+' W</b> : tenez <b>'+v+' km/h</b> (≈ '+cadEst(v*10).toFixed(0)+' rpm, ±'+p.band+' km/h). Sans assistance, cette puissance est 100 % la vôtre. Palier trop dur ? « Étape suivante ».'});
+    return {steps, speeds};
+  }
+  const speeds=numList(p.speeds);
+  for(const v of speeds) steps.push({id:'S-L'+lvl+'-v'+v, kind:'plateau', lvl, vT:v, dur:p.stable,
+    title:'Niveau '+lvl+' — palier '+v+' km/h',
+    instr:'Tenez <b>'+v+' km/h</b> (±'+p.band+' km/h ≈ '+cadEst(v*10).toFixed(0)+' rpm) : le chrono ne compte que dans la bande, une sortie de plus de 2 s le remet à zéro. Assis, régulier, sans à-coups ; ne touchez pas au niveau.'});
+  if(p.cut) steps.push({id:'S-L'+lvl+'-cut', kind:'sweep', lvl, dur:90, title:'Niveau '+lvl+' — traversée de coupure',
+    instr:'Suivez le guide : montée <b>lente</b> de 20 à 26 km/h (≈ 6 s par km/h) puis relâchez 10 s — deux passages. Street ON requis (sinon pas de coupure à 25).'});
+  return {steps, speeds};
+}
+
+async function sApplyTrainer(st){
+  const t=proto&&proto.trainer; if(!t||!ftmsCtrl) return;
+  if(st && st.erg) return trainerTargetPowerW(st.erg);     // étalonnage : ERG par étape
+  if(t.mode==='res') await trainerResistancePct(t.val);
+  else if(t.mode==='grade') await trainerGradePct(t.val);
+  else await trainerTargetPowerW(t.val);
+}
+
+function startProtoS(){
+  if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
+  if(bench){ alert('Désarmez le mode banc : la phase S tourne en assistance normale.'); return; }
+  if(curLvl==null){ alert('Niveau d’assistance inconnu : attendez le paquet 0x01 (~2 s) et relancez.'); return; }
+  const calib=$('sMode').value==='calib';
+  const sel=$('sLvl').value, lvl = calib ? 0 : sel==='auto' ? curLvl : +sel;
+  if(calib && !ftmsCtrl){ alert('Étalonnage L0 : le contrôle FTMS du trainer est indispensable (paliers ERG imposés). Connectez le home trainer.'); return; }
+  if(!trainerDev && !confirm('Home trainer NON connecté : sans pmeca la phase S perd sa mesure pivot (puissance roue). Continuer quand même ?')) return;
+  const trMode=calib?'erg-calib':$('trMode').value, trVal=calib?null:+$('trVal').value;
+  if(!calib && trMode==='erg' && !confirm('Trainer en ERG : la charge ne croît pas avec la vitesse, les paliers assistés seront difficiles à tenir (la grille se fait en résistance fixe ; l’ERG est réservé à l’étalonnage L0). Continuer en ERG ?')) return;
+  if(!calib && trainerDev && !ftmsCtrl && !confirm('Pas de contrôle FTMS : réglez la charge à la main sur le trainer et ne la changez plus de la campagne. Continuer ?')) return;
+  if(lastVoltX10 && lastVoltX10<430 && !confirm('Pack < 43 V ('+(lastVoltX10/10).toFixed(1)+' V) : run noté « pack bas », les pics seront déformés. Continuer ?')) return;
+  if(isStock() && !bmsDev && !confirm('Firmware STOCK sans BMS connecté : le JSONL n’aura AUCUNE puissance batterie fiable (cur = courant phase). Continuer sans pbat ?')) return;
+  if(!isStock() && aweOn && !confirm('« Assist with error » est actif (force la cadence interne à 1 → mesures faussées). Continuer quand même ?')) return;
+  const p=sParams();
+  const {steps,speeds}=buildProtoS(lvl,p);
+  if(steps.length<2){ alert('Liste de paliers vide.'); return; }
+  beep(1);   // le geste utilisateur débloque l’audio pour les bips suivants
+  log=[]; recording=true;
+  $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
+  proto={phase:'S', steps, idx:-1, curId:null, state:'running', t0:Date.now(), samples:[], results:[], lvl, params:p, speeds,
+         trainer:{mode:trMode, val:trVal, ctrl:!!ftmsCtrl, ...(calib?{ergs:numList(p.ergs)}:{})}, calib,
+         stableSince:null, lastIn:0, acq:null, timer:setInterval(protoTick,250)};
+  $('protoIdle').hidden=true; $('protoDone').hidden=true; $('protoRun').hidden=false;
+  $('pPhase').textContent='PHASE S — '+(calib?'étalonnage L0 en ERG':'niveau '+lvl+' × vitesses')+', pédalage ('+(isStock()?'STOCK':'OSF')+(bmsDev?', BMS':'')+')';
+  $('btnProtoRedo').hidden=false;
+  if(!calib) sApplyTrainer();
+  nextStepS();
+}
+
+function sMedians(ss){
+  const c=k=>med(ss.map(x=>x[k]).filter(v=>v!=null));
+  const spd=c('spdX10');
+  return { n:ss.length, spd:spd!=null?+(spd/10).toFixed(1):null, cadEst:spd!=null?+cadEst(spd).toFixed(1):null,
+           torque:c('torque'), cur:c('cur'), volt:c('voltX10')!=null?+(c('voltX10')/10).toFixed(1):null,
+           pmeca:c('pmeca'), pow:c('pow'), cad:c('cad'), delta:c('delta'), duty:c('duty'),
+           vbat:c('vbat'), ibat:c('ibat'), pbat:c('pbat') };
+}
+
+function sStepResult(p, st){
+  const now=Date.now(), base={id:st.id, kind:st.kind, lvl:st.lvl};
+  if(st.kind==='level')
+    return {...base, v:(curLvl===st.lvl?'OK':'ATT'), d:'niveau display '+curLvl+(curLvl===st.lvl?'':' (attendu '+st.lvl+')')};
+  if(st.kind==='plateau'){
+    let win=p.acq, note='';
+    if(!win){
+      if(p.stableSince && now-p.stableSince>=10000){ win={since:p.stableSince, until:now}; note=' — fenêtre partielle'; }
+      else return {...base, vT:st.vT, v:'KO', d:'palier non acquis (jamais 10 s stables dans la bande)'};
+    }
+    const ss=p.samples.filter(x=>x.t>=win.since && x.t<=win.until);
+    const m=sMedians(ss); m.stableS=+((win.until-win.since)/1000).toFixed(0);
+    const r={...base, vT:st.vT, erg:st.erg||null, med:m};
+    let d='v '+m.spd+' km/h · cad≈'+m.cadEst+' rpm · couple '+m.torque+' · cur '+m.cur+' · roue '+(m.pmeca??'–')+' W'
+      +(m.pbat!=null?' · batt '+m.pbat.toFixed(0)+' W ('+m.vbat.toFixed(1)+' V / '+m.ibat.toFixed(1)+' A)':'')
+      +' · '+m.stableS+' s'+note;
+    if(m.pmeca==null || m.pmeca===0) return {...r, v:'ATT', d:d+' — pmeca absent (trainer ?)'};
+    if(ss.some(x=>x.lvl!==st.lvl)) return {...r, v:'ATT', d:d+' — niveau changé pendant la fenêtre'};
+    if(ss.some(x=>x.err)) return {...r, v:'ATT', d:d+' — erreur moteur présente'};
+    if(note) return {...r, v:'ATT', d};
+    return {...r, v:'OK', d};
+  }
+  // sweep : vitesse à partir de laquelle le courant (phase en stock, batterie en OSF) tombe sous 25 %
+  // de sa médiane entre 19 et 21 km/h
+  const ref=p.samples.filter(x=>x.spdX10>=190 && x.spdX10<=210).map(x=>x.cur);
+  const cb=med(ref); let vcut=null;
+  if(cb!=null && cb>5){ const ab=p.samples.filter(x=>x.spdX10>210 && x.cur<cb*0.25).map(x=>x.spdX10/10); if(ab.length) vcut=Math.min(...ab); }
+  const vmax=mx(p.samples.map(x=>x.spdX10))/10;
+  return {...base, vcut, vmax, curBase:cb, v:(vcut!=null?'OK':'ATT'),
+    d:'v max '+vmax.toFixed(1)+' km/h · cur réf 19-21 km/h '+(cb??'–')+(vcut!=null?' · assistance < 25 % dès '+vcut.toFixed(1)+' km/h':' — coupure non vue (street OFF ? vitesse max insuffisante ?)')};
+}
+
+function nextStepS(){
+  const p=proto; if(!p) return;
+  if(p.idx>=0) p.results.push(sStepResult(p, p.steps[p.idx]));
+  p.idx++; p.samples=[]; p.stableSince=null; p.lastIn=0; p.acq=null; p.t0=Date.now(); p.state='running';
+  if(p.idx>=p.steps.length) return endProtoS(false);
+  const st=p.steps[p.idx]; p.curId=st.id;
+  $('pTitle').textContent=st.id+' — '+st.title+(st.kind==='plateau'?'  ('+p.params.stable+' s stables, '+p.params.max+' s max)':'');
+  $('pInstr').innerHTML=st.instr;
+  $('pWait').hidden=true; $('pPrompt').hidden=true;
+  if(st.kind==='plateau') sApplyTrainer(st);   // certains trainers oublient la consigne après un arrêt de roue ; ERG par étape en étalonnage
+}
+
+function protoSampleS(d,now,st){
+  const p=proto;
+  p.samples.push({t:now, lvl:curLvl, pow:curPower, pmeca:pmeca, ...d, ...sBmsFields(now)});
+  if(st.kind!=='plateau') return;
+  const inBand = Math.abs(d.spdX10/10-st.vT)<=p.params.band && curLvl===st.lvl;
+  if(inBand){ p.lastIn=now; if(!p.stableSince) p.stableSince=now; }
+  else if(p.stableSince && now-p.lastIn>2000) p.stableSince=null;   // > 2 s hors bande : chrono à zéro
+}
+
+function protoTickS(){
+  const p=proto; if(!p) return; const st=p.steps[p.idx]; if(!st) return;
+  const now=Date.now();
+  const stalled = lastPkt && (now-lastPkt>3000);
+  if(stalled){ p.t0+=250; p.stableSince=null; $('pWait').hidden=false;
+    $('pWait').textContent='⚠ Télémétrie interrompue — reconnectez le SW102 (bouton en haut), le chrono est en pause.'; }
+  else $('pWait').hidden=true;
+  const el=(now-p.t0)/1000, pr=$('pPrompt'); pr.hidden=false; pr.style.color='#fff';
+  if(st.kind==='level'){
+    const ok = curLvl===st.lvl;
+    pr.textContent = ok ? 'niveau '+st.lvl+' ✓' : 'NIVEAU '+st.lvl+' ATTENDU — display au niveau '+curLvl;
+    pr.style.background = ok ? '#1e6b3f' : '#7a5c12';
+    if(!ok) p.t0=now;                     // 3 s de confirmation au bon niveau
+    $('pStepLeft').textContent = ok ? fmtT(3-el) : 'en attente';
+    $('pBarStep').style.width='0%';
+    if(ok && el>=3){ beep(1); return nextStepS(); }
+  } else if(st.kind==='plateau'){
+    const spd=lastSpdX10/10, dev=Math.abs(spd-st.vT), stab=p.stableSince?(now-p.stableSince)/1000:0;
+    pr.textContent = spd.toFixed(1)+' km/h  →  '+st.vT+'   ·   stable '+Math.floor(stab)+' / '+p.params.stable+' s';
+    if(curLvl!==st.lvl) pr.textContent='NIVEAU '+st.lvl+' ATTENDU (display '+curLvl+')  ·  '+pr.textContent;
+    pr.style.background = curLvl!==st.lvl ? '#7a1f1c' : dev<=p.params.band ? '#1e6b3f' : dev<=p.params.band*2 ? '#7a5c12' : '#7a1f1c';
+    $('pStepLeft').textContent=fmtT(p.params.max-el)+' max';
+    $('pBarStep').style.width=Math.min(100,stab/p.params.stable*100)+'%';
+    if(p.stableSince && stab>=p.params.stable){ p.acq={since:p.stableSince, until:now}; beep(2); return nextStepS(); }
+    if(el>=p.params.max){ beep(3); return nextStepS(); }
+  } else {   // sweep : 2 passages de 45 s — 35 s de montée 20→26 km/h puis 10 s relâchés
+    const ph=el%45, pass=Math.min(2,Math.floor(el/45)+1), target = ph<35 ? 20+ph/35*6 : null;
+    pr.textContent = target!=null ? 'passage '+pass+' — visez '+target.toFixed(1)+' km/h  (actuel '+(lastSpdX10/10).toFixed(1)+')'
+                                  : 'passage '+pass+' — RELÂCHEZ, laissez ralentir';
+    pr.style.background = target!=null ? '#1e6b3f' : '#7a5c12';
+    $('pStepLeft').textContent=fmtT(st.dur-el);
+    $('pBarStep').style.width=Math.min(100,el/st.dur*100)+'%';
+    if(el>=st.dur){ beep(2); return nextStepS(); }
+  }
+  // ligne de vie : cadence estimée, couple brut, courant, roue, batterie BMS
+  const cad=$('pCad'); cad.hidden=false; cad.style.background='#2a3340'; cad.style.color='var(--tx)';
+  cad.textContent='cad≈'+cadEst(lastSpdX10).toFixed(0)+' rpm · couple '+lastTorque+' · cur '+lastCur
+    +(pmeca!=null?' · roue '+pmeca+' W':' · roue –')+(bms&&now-bms.t<3000?' · batt '+bms.p.toFixed(0)+' W':'');
+  const done=p.results.filter(r=>r.kind==='plateau').length, tot=p.steps.filter(x=>x.kind==='plateau').length;
+  $('pTotLeft').textContent=done+' / '+tot+' paliers';
+  $('pBarTot').style.width=Math.min(100,p.idx/p.steps.length*100)+'%';
+  const t=p.trainer;
+  $('pRes').hidden=false;
+  $('pRes').textContent=(st.erg?'ERG '+st.erg+' W (étalonnage)':t.mode==='res'?'résistance '+t.val+' %':t.mode==='grade'?'pente '+t.val+' %':'ERG '+t.val+' W')
+    +(t.ctrl?'':' (manuel)')+' · street '+(curStreet?'ON':'OFF')+' · '+p.params.chainring+'/'+p.params.cog;
+}
+
+function endProtoS(aborted){
+  const p=proto; proto=null; clearInterval(p.timer);
+  recording=false;
+  $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
+  $('btnProtoRedo').hidden=true; $('pCad').hidden=true;
+  if(ftmsCtrl) trainerResistancePct(20);   // relâcher la charge en fin de run
+  const extra={phase:'S', lvl:p.lvl, speeds:p.speeds, band:p.params.band, stableS:p.params.stable,
+    gear:{chainring:p.params.chainring, cog:p.params.cog, circ_mm:p.params.circ}, trainer:p.trainer,
+    street:curStreet, mode:curMode, bms:!!bmsDev, results:p.results, aborted:!!aborted};
+  archiveLog('banc', 'protoS-L'+p.lvl+(p.calib?'-calib':''), extra);
+  $('protoRun').hidden=true; $('protoDone').hidden=false;
+  const pl=p.results.filter(r=>r.kind==='plateau');
+  $('pDoneTitle').textContent=(aborted?'⚠ Run interrompu — ':'')+'Phase S '+(p.calib?'étalonnage L0':'niveau '+p.lvl)+' : '
+    +pl.filter(r=>r.v==='OK').length+' / '+pl.length+' paliers acquis'
+    +(isStock()?' (STOCK'+(p.trainer.ctrl?'':', charge manuelle')+')':' (OSF)');
+  $('pVerdict').innerHTML='<tr><th>Palier</th><th>État</th><th>v km/h</th><th>cad≈</th><th>couple</th><th>cur</th><th>roue W</th><th>batt W</th><th>stable</th><th>Détail</th></tr>'
+    +p.results.map(r=>{ const m=r.med||{};
+      return '<tr><td>'+r.id+'</td><td><span class="chip '+r.v+'">'+(r.v==='OK'?'OK':r.v==='ATT'?'ATTENTION':'ÉCHEC')+'</span></td>'
+        +'<td>'+(m.spd??'')+'</td><td>'+(m.cadEst!=null?m.cadEst.toFixed(0):'')+'</td><td>'+(m.torque??'')+'</td><td>'+(m.cur??'')+'</td>'
+        +'<td>'+(m.pmeca??'')+'</td><td>'+(m.pbat!=null?m.pbat.toFixed(0):'')+'</td><td>'+(m.stableS!=null?m.stableS+' s':'')+'</td>'
+        +'<td style="font-size:12px">'+r.d+'</td></tr>'; }).join('');
+  window._lastProto={...extra};
+  benchUi();
+}
+
+/* ---------------------------------------------------------------------------
+   PHASE R — CYCLE DE TEST CAPTEURS RD45 (firmware stock + patch Syklo), 2026-09-21
+
+   Vélo sur pied, roue arrière en l'air, aucun trainer ni BMS : l'opérateur est guidé
+   comme en phase S et fait les réglages SUR LE DISPLAY (niveau, Max speed, marche).
+   Chaque étape juge le bloc 0x46 décodé (decodeF46) et le 0x04 stock ; un critère qui
+   n'existe qu'en patch v4 donne « n/a (patch < v4) » en v3 ou stock, jamais KO.
+   Étapes : R0 repos, R1 pédales en arrière, R2 pédalage à vide, R3 appuis pédale,
+   R4 marche, R5 six démarrages, R6-20/25/32/36 paliers Max speed (bride Hall ≈ 1,1 ×
+   Max speed), R7 arrêt / reprise. Verdict final PAR ORGANE (cassette/cadence, couple,
+   vitesse, Hall + moteur, chaîne couple → courant, timeouts, UART/erreurs) avec le
+   chiffre mesuré et, si KO, « ce que le prochain run doit vérifier ».
+   Échantillon = 0x04 (5 Hz) + dernière trame 0x46 décodée (f) et son compteur (fn) ;
+   rFrames() ne garde qu'une ligne par trame 0x46 distincte (relais 0x08 à 2 Hz).
+--------------------------------------------------------------------------- */
+const R_MAX=[20,25,32,36];
+const R_ORG=[['cassette','Cassette / cadence'],['couple','Capteur de couple'],['vitesse','Capteur de vitesse'],
+             ['hall','Hall + moteur'],['chaine','Chaîne couple → courant'],['timeouts','Timeouts arrêt / reprise'],['uart','UART / erreurs'],
+             ['drapeaux','Drapeaux silencieux']];
+// drapeaux SILENCIEUX (v4) : sans code d'erreur côté stock — [page, bit, libellé]
+const R_SILENT=[[4,2,'blocage rotor (flags1 b2)'],[12,2,'capteur de couple défaillant (system_state_lj_flag b2, latché)'],[3,5,'capteur vitesse (flags1 b21)']];
+function rSilent(fr){ const out=[], seen=new Set();
+  for(const f of fr) if(f.pg!=null) for(const [pg,bit,lbl] of R_SILENT) if(f.pg===pg && ((f.pv>>bit)&1) && !seen.has(lbl)){ seen.add(lbl); out.push(lbl+(f.stp?' (vu en '+f.stp+')':'')); }
+  return out; }
+const rPagesSeen=fr=>{ const s=new Set(); for(const f of fr) if(f.pg!=null) s.add(f.pg); return [3,4,12].filter(p=>!s.has(p)); };
+const R_NEXT={
+  drapeaux:'relire les pages 3 / 4 / 12 au repos puis en charge : blocage rotor (flags1 b2 : moteur actif 8 s à > 1,5 A sans rotation), capteur de couple (system_state_lj_flag b2, latché → couper l’alimentation), capteur vitesse (flags1 b21 : 50 s de courant roue immobile) ; câblage capteur / Hall',
+  cassette:'refaire R1 + R2 (patch v4) : bit roue libre (bit 7) et compteur d’impulsions (bits 0-6) de l’octet 3 capteur ; câble et connecteur de la cassette',
+  couple:'refaire R3 frein serré, appuis francs : TX22 (couple net) doit monter ≥ 8 et revenir à 0 en < 1 s ; contrôler le zéro appris (page 6 en v4)',
+  vitesse:'refaire R6 palier par palier : p / étendue / rejets (aimant, entrefer, câble capteur) et bride Hall ≈ 1,1 × Max speed',
+  hall:'refaire R4 (marche) : Hall_Speed > 0 et rapport Hall / km/h stable ; câble Hall moteur, connecteur 6 voies',
+  chaine:'refaire R5 au niveau 1 : courant TX18-19 > 1000 sous 1 s après TX22 ≥ 4, retour < 500 sous 2 s ; niveau réellement actif ?',
+  timeouts:'refaire R7 : est ≥ 1750 au plus 2 s après p = 4500, et est/p entre 0,85 et 1,0 dès la 3ᵉ ligne à la reprise',
+  uart:'compteurs ckErr / commErr et code err : câble UART display ↔ contrôleur, masse, connecteur display',
+};
+const rCadVal=()=>{ const v=+(($('rCad').value||'').replace(',','.')); return v>0?v:null; };
+const rV4=()=>!!(proto&&proto.patch&&proto.patch.ver>=4);
+const vNA=d=>({v:'NA', d:'n/a (patch < v4)'+(d?' — '+d:'')});
+const chipTxt=v=>v==='OK'?'OK':v==='ATT'?'ATTENTION':v==='NA'?'n/a':'ÉCHEC';
+// une ligne par trame 0x46 distincte, avec la vitesse display et tickRaw du 0x04 porteur
+const rFrames=ss=>{ const out=[]; let last=null; for(const s of ss){ if(!s.f||s.f.ver==null) continue;
+  if(s.fn!==last){ out.push({t:s.t, stp:s.stp, spdX10:s.spdX10, tickRaw:s.tickRaw, ...s.f}); last=s.fn; } } return out; };
+const rLast=(ss,sec)=>{ if(!ss.length) return ss; const te=ss[ss.length-1].t; return ss.filter(x=>x.t>=te-sec*1000); };
+const rCv=a=>{ const m=mean(a); return m>0?sdev(a)/m:null; };
+const rRej=fr=>{ let n=0; for(let i=1;i<fr.length;i++) n+=(fr[i].nbad-fr[i-1].nbad+16)%16; return n; };
+const rFwTog=fr=>{ let n=0; for(let i=1;i<fr.length;i++) if(fr[i].fw!==fr[i-1].fw) n++; return n; };
+const rPages=fr=>{ const o={}; for(const f of fr) if(f.pg!=null) o[f.pg]=f.pv; return o; };
+const pct=x=>x!=null?(x*100).toFixed(1)+' %':'–';
+function orgAdd(k,v,d){ const p=proto; if(!p) return; (p.org[k]=p.org[k]||[]).push({v,d}); }
+function orgVerdict(list){ if(!list||!list.length) return {v:'NA', d:'non testé'};
+  const rank={KO:3,ATT:2,OK:1,NA:0}; let v='NA'; for(const x of list) if(rank[x.v]>rank[v]) v=x.v; return {v, d:list.map(x=>x.d).join(' ; ')}; }
+// impulsions TX22 ≥ 8 (R3) : pic, instant de relâché (< 8) et retour à 0
+function rPulses(fr){ const P=[]; let inP=false;
+  for(const f of fr){
+    if(!inP){ if(f.tq>=8){ inP=true; P.push({peak:f.tq, t0:f.t, tRel:null, tZero:null}); } }
+    else { const c=P[P.length-1]; c.peak=Math.max(c.peak,f.tq); if(f.tq<8){ inP=false; c.tRel=f.t; } }
+    const c=P[P.length-1]; if(c&&!inP&&c.tRel!=null&&c.tZero==null&&f.tq===0) c.tZero=f.t;
+  } return P; }
+// démarrages (R5) : front TX22 ≥ 4 → courant > 1000 sous 1 s ; arrêt TX22 < 2 → courant < 500 sous 2 s
+function rStarts(fr){ let starts=0, sOk=0, stops=0, pOk=0, above=false;
+  for(const f of fr){
+    if(!above && f.tq>=4){ above=true; starts++; if(fr.some(g=>g.t>=f.t&&g.t<=f.t+1000&&g.cur>1000)) sOk++; }
+    else if(above && f.tq<2){ above=false; stops++; if(fr.some(g=>g.t>=f.t&&g.t<=f.t+2000&&g.cur<500)) pOk++; }
+  } return {starts, sOk, stops, pOk, n:Math.min(sOk,pOk,6)}; }
+
+function ckR0(ss){
+  if(!ss.length) return vATT('aucun échantillon');
+  const fr=rFrames(ss), v4=rV4(), bad=[], ok=[]; let okV=true, okTq=true, okH=true;
+  const vMax=mx(col(ss,'spdX10'))/10; if(vMax>0.5){ bad.push('vitesse '+vMax.toFixed(1)+' km/h'); okV=false; } else ok.push('v 0');
+  const sd=sdev(col(ss,'torque')); if(sd>=1){ bad.push('torque instable (σ '+sd.toFixed(2)+')'); okTq=false; } else ok.push('σ torque '+sd.toFixed(2));
+  if(!ckErr(ss)) bad.push('err '+errSeen(ss));
+  if(!fr.length) bad.push('aucune trame 0x46 décodée');
+  else {
+    const tq=mx(fr.map(f=>f.tq)); if(tq>0){ bad.push('TX22 max '+tq+' (attendu 0)'); okTq=false; } else ok.push('TX22 0');
+    if(fr[0].ver>0){ const nb=rRej(fr); if(nb){ bad.push(nb+' rejet(s) capteur'); okV=false; } else ok.push('0 rejet'); }
+    if(!v4 && fr[0].ver>0){ const pMin=mn(fr.map(f=>f.p)), eMin=mn(fr.map(f=>f.est));
+      if(pMin<4500){ bad.push('p min '+pMin+' (attendu 4500)'); okV=false; } else ok.push('p 4500');
+      if(eMin<1750){ bad.push('est min '+eMin+' (attendu ≥ 1750)'); okV=false; } else ok.push('est ≥ 1750'); }
+    if(v4){ const h=mx(fr.map(f=>f.hall)); if(h>0){ bad.push('Hall_Speed '+h+' au repos'); okH=false; } else ok.push('Hall 0');
+      const pg=rPages(fr); for(const k of [2,3,4]) if(pg[k]){ bad.push('page '+k+' (drapeaux) = '+pg[k].toString(2).padStart(8,'0')); okH=false; }
+      proto.tq10Rest=med(fr.map(f=>f.tq10));
+      // drapeaux silencieux : blocage rotor, capteur de couple, capteur vitesse — KO nommé
+      const sil=rSilent(fr), miss=rPagesSeen(fr);
+      if(sil.length) bad.push('drapeau silencieux : '+sil.join(', ')); else if(!miss.length) ok.push('drapeaux silencieux 0');
+      orgAdd('drapeaux', sil.length?'KO':miss.length?'ATT':'OK', 'repos : '+(sil.length?sil.join(', '):miss.length?'page(s) '+miss.join('/')+' non vue(s) en 15 s':'blocage rotor 0, capteur couple 0, capteur vitesse 0')); }
+    else if(fr[0].ver>0) orgAdd('drapeaux','NA','n/a (patch < v4)');
+  }
+  orgAdd('vitesse', okV?'OK':'KO', 'repos : '+(okV?'v 0, p 4500, est ≥ 1750, 0 rejet':bad.filter(b=>/^(vitesse|p min|est min|\d+ rejet)/.test(b)).join(', ')));
+  orgAdd('couple', okTq?'OK':'KO', 'repos : TX22 '+(fr.length?mx(fr.map(f=>f.tq)):'–')+', σ torque '+sd.toFixed(2));
+  if(v4) orgAdd('hall', okH?'OK':'KO', 'repos : Hall_Speed '+mx(fr.map(f=>f.hall))+', drapeaux '+(okH?'0':'≠ 0'));
+  return bad.length ? vKO(bad.join(' · ')) : vOK(ok.join(' · '));
+}
+function ckR1(ss){
+  if(!ss.length) return vATT('aucun échantillon');
+  if(!rV4()){ orgAdd('cassette','NA','sens : n/a (patch < v4)'); return vNA('bit roue libre et compteur cadence absents du bloc 0x46 en v3'); }
+  const fr=rFrames(ss), tog=rFwTog(fr); let net=0; for(let i=1;i<fr.length;i++) net+=rCadD(fr[i-1].cad, fr[i].cad);
+  const ok=tog>=5 && Math.abs(net)<=1, d='roue libre '+tog+' bascule(s) (≥ 5) · compteur cadence net '+net+' (|Δ| ≤ 1)';
+  orgAdd('cassette', ok?'OK':'KO', 'sens : '+d);
+  return ok ? vOK('capteur cassette : sens OK — '+d) : vKO(d);
+}
+function ckR2(ss){
+  if(!ss.length) return vATT('aucun échantillon');
+  const fr=rFrames(ss), tqMax=fr.length?mx(fr.map(f=>f.tq)):null, tqOk=tqMax!=null&&tqMax<3, tqD='TX22 max '+(tqMax??'–')+' (< 3)';
+  orgAdd('couple', tqOk?'OK':'KO', 'à vide : '+tqD);
+  if(!rV4()){ orgAdd('cassette','NA','cadence : n/a (patch < v4)'); return tqOk ? vOK(tqD+' · cadence / roue libre : n/a (patch < v4)') : vKO(tqD); }
+  let tot=0, mono=true; for(let i=1;i<fr.length;i++){ const d=rCadD(fr[i-1].cad, fr[i].cad); if(d<0) mono=false; tot+=d; }
+  const dur=fr.length>1?(fr[fr.length-1].t-fr[0].t)/1000:0, pps=dur>0?tot/dur:0, rpm=proto.rCad, ppr=rpm&&pps?pps*60/rpm:null;
+  const tog=rFwTog(fr), hMax=mx(fr.map(f=>f.hall)), bad=[];
+  if(!mono||tot<=0) bad.push('compteur cadence '+(tot<=0?'immobile':'non monotone')+' ('+tot+')');
+  if(!tog) bad.push('roue libre sans bascule'); if(!tqOk) bad.push(tqD); if(hMax>0) bad.push('Hall_Speed '+hMax+' au niveau 0');
+  const cadD=pps.toFixed(1)+' imp/s'+(ppr?' = '+ppr.toFixed(1)+' imp/tour à '+rpm+' rpm':'');
+  orgAdd('cassette', (mono&&tot>0&&tog)?'OK':'KO', 'cadence : '+cadD+', roue libre '+tog+' bascule(s)');
+  if(hMax>0) orgAdd('hall','KO','Hall_Speed '+hMax+' sans assistance (niveau 0)');
+  const d='cadence '+cadD+' · roue libre '+tog+' bascule(s) · '+tqD+' · Hall '+hMax;
+  return bad.length ? vKO(bad.join(' · ')+' — '+d) : vOK(d);
+}
+function ckR3(ss){
+  if(!ss.length) return vATT('aucun échantillon');
+  const fr=rFrames(ss), P=rPulses(fr), n=P.length;
+  const ret=P.filter(c=>c.tRel!=null).map(c=>c.tZero!=null?(c.tZero-c.tRel)/1000:null), retOk=ret.length>0&&ret.every(r=>r!=null&&r<1);
+  let d=n+' appui(s) TX22 ≥ 8 (pics '+(P.map(c=>c.peak).join(' / ')||'–')+') · retour à 0 : '+(ret.map(r=>r==null?'jamais':r.toFixed(1)+' s').join(' / ')||'–');
+  if(rV4()){ const t10=fr.map(f=>f.tq10), rest=proto.tq10Rest??med(t10.slice(0,4)), rise=mx(t10)-rest;
+    d+=' · couple 10 bits +'+rise.toFixed(0)+' au-dessus du repos '+rest+' (≥ 100)';
+    orgAdd('couple', rise>=100?'OK':'KO', 'appui : couple 10 bits +'+rise.toFixed(0)+' (≥ 100)'); }
+  const ok=n>=3&&retOk;
+  orgAdd('couple', ok?'OK':'KO', 'appui : '+Math.min(n,3)+'/3 impulsions TX22 ≥ 8, retour < 1 s '+(retOk?'OK':'KO'));
+  return ok ? vOK('capteur de couple OK — '+d) : n>0 ? vATT(d) : vKO('aucun appui vu (TX22 jamais ≥ 8) — '+d);
+}
+function ckR4(ss){
+  if(!ss.length) return vATT('aucun échantillon (roue jamais entraînée ≥ 2 km/h)');
+  const w=rLast(ss,10), fr=rFrames(w), v=med(col(w,'spdX10'))/10, cur=fr.length?med(fr.map(f=>f.cur)):null, bad=[];
+  if(!(v>=3&&v<=8)) bad.push('vitesse '+v.toFixed(1)+' km/h (attendu 3-8)');
+  if(!(cur>0)) bad.push('courant moteur '+(cur??'–')+' (attendu > 0)');
+  if(!ckErr(ss)) bad.push('err '+errSeen(ss));
+  let hd='';
+  if(rV4()){ const rat=fr.filter(f=>f.spdX10>=20).map(f=>f.hall/(f.spdX10/10)), h=fr.length?med(fr.map(f=>f.hall)):0, c=rat.length>=3?rCv(rat):null, r=rat.length?med(rat):null;
+    hd=' · Hall_Speed '+h+' · Hall / km/h '+(r!=null?r.toFixed(1):'–')+' (CV '+pct(c)+')';
+    const hOk=h>0&&c!=null&&c<0.05; if(!hOk) bad.push('Hall '+(h>0?'instable':'nul'));
+    orgAdd('hall', hOk?'OK':'KO', 'marche : Hall / km/h '+(r!=null?r.toFixed(1):'–')+', CV '+pct(c)); }
+  else orgAdd('hall', bad.length?'KO':'OK', 'marche : v '+v.toFixed(1)+' km/h, courant '+(cur??'–')+' (Hall_Speed : n/a v3)');
+  const d='v '+v.toFixed(1)+' km/h · courant moteur '+(cur??'–')+hd;
+  return bad.length ? vKO(bad.join(' · ')+' — '+d) : vOK((rV4()?'Hall + moteur OK — ':'moteur OK — ')+d);
+}
+function ckR5(ss){
+  if(!ss.length) return vATT('aucun échantillon');
+  const s=rStarts(rFrames(ss));
+  const d=s.starts+' démarrage(s) vus, '+s.sOk+' avec courant > 1000 sous 1 s · '+s.stops+' arrêt(s), '+s.pOk+' avec courant < 500 sous 2 s → '+s.n+'/6';
+  orgAdd('chaine', s.n>=6?'OK':s.n>=3?'ATT':'KO', s.n+'/6 démarrages (couple → courant)');
+  return s.n>=6 ? vOK('chaîne couple → courant OK — '+d) : s.n>=3 ? vATT(d) : vKO(d);
+}
+function ckR6(ss,m){
+  const tgt=1.1*m;
+  if(!ss.length){ orgAdd('vitesse','KO','palier '+m+' : roue jamais ≥ 5 km/h'); return vKO('palier non atteint (roue jamais ≥ 5 km/h)'); }
+  const w=rLast(ss,10), fr=rFrames(w), v4=rV4(), spd=col(w,'spdX10').map(x=>x/10), vMed=med(spd), c=rCv(spd), bad=[];
+  if(c==null||c>=0.03) bad.push('CV vitesse '+pct(c)+' (< 3 %)');
+  if(Math.abs(vMed-tgt)>2) bad.push('v '+vMed.toFixed(1)+' vs '+tgt.toFixed(1)+' ± 2');
+  let rel=null, nb=null;
+  if(fr.length && fr[0].ver>0){
+    if(!v4){ const sp=med(fr.map(f=>f.spread)), pm=med(fr.map(f=>f.p)); rel=pm>0?sp/pm:null; }
+    else { const pg=rPages(fr), tk=med(col(w,'tickRaw').filter(x=>x>0)); if(pg[7]!=null&&tk>0) rel=pg[7]/(tk*RD45_K_P/RD45_K_EST); }
+    if(rel!=null&&rel>=0.15) bad.push('étendue relative '+(rel*100).toFixed(0)+' % (< 15 %)');
+    nb=rRej(fr); if(nb>=2) bad.push(nb+' rejets (< 2)');
+  }
+  let hd='', info='';
+  if(v4 && fr.length){ const rat=fr.filter(f=>f.spdX10>=50).map(f=>f.hall/(f.spdX10/10)), r=rat.length?med(rat):null, prev=proto.hallRatioPrev;
+    hd=' · Hall / km/h '+(r!=null?r.toFixed(1):'–')+(prev!=null&&r!=null?' (palier précédent '+prev.toFixed(1)+')':'');
+    const hBad = r==null || (prev!=null && Math.abs(r-prev)/prev>0.05);
+    if(hBad) bad.push(r==null?'Hall_Speed absent':'rapport Hall '+r.toFixed(1)+' ≠ palier précédent '+prev.toFixed(1)+' (± 5 %)');
+    if(r!=null) proto.hallRatioPrev=r;
+    orgAdd('hall', hBad?'KO':'OK', 'palier '+m+' : Hall / km/h '+(r!=null?r.toFixed(1):'–')); }
+  if(!v4 && fr.length && fr[0].ver>0){ const vs=med(fr.map(f=>f.kmhStock)), ve=med(fr.map(f=>f.kmhEst));
+    if(ve>0) info=' · stock '+vs.toFixed(1)+' vs est '+ve.toFixed(1)+' km/h ('+((vs/ve-1)*100).toFixed(0)+' %, info : repliement > 30)'; }
+  const d='v '+vMed.toFixed(1)+' km/h (cible '+tgt.toFixed(1)+' ± 2) · CV '+pct(c)+' · étendue rel. '+(rel!=null?(rel*100).toFixed(0)+' %':'–')+' · rejets '+(nb??'–')+hd+info;
+  orgAdd('vitesse', bad.filter(b=>!/^rapport Hall|^Hall_Speed/.test(b)).length?'KO':'OK', 'palier '+m+' : v '+vMed.toFixed(1)+' (cible '+tgt.toFixed(1)+'), CV '+pct(c)+', étendue '+(rel!=null?(rel*100).toFixed(0)+' %':'–')+', rejets '+(nb??'–'));
+  return bad.length ? vKO(bad.join(' · ')+' — '+d) : vOK(d);
+}
+function ckR7(ss){
+  if(!ss.length) return vATT('aucun échantillon');
+  if(rV4()){
+    // v4 : p et est ne sont plus dans le bloc 0x46 ; en FIX, tickRaw (0x04, avant clamp) = est du patch
+    const tk=ss.filter(s=>s.tickRaw!=null && s.tickRaw>0);
+    if(!tk.length){ orgAdd('timeouts','KO','aucune période roue (tickRaw)'); return vKO('aucune période roue (tickRaw) dans le 0x04'); }
+    let iStop=-1; for(let i=1;i<tk.length;i++) if(tk[i-1].tickRaw<1750 && tk[i].tickRaw>=1750){ iStop=i; break; }
+    if(iStop<0){ orgAdd('timeouts','KO','arrêt jamais vu (tickRaw < 1750 → ≥ 1750)'); return vKO('arrêt jamais vu : tickRaw n’est pas passé de < 1750 à ≥ 1750 (roue freinée jusqu’à l’arrêt ?)'); }
+    let iSlow=iStop-1; while(iSlow>0 && tk[iSlow].tickRaw>=1000) iSlow--;      // dernière ligne à plus de 4 km/h
+    const dtS=(tk[iStop].t-tk[iSlow].t)/1000, okStop=dtS<=3;
+    let iGo=-1; for(let i=iStop+1;i<tk.length;i++) if(tk[i].tickRaw<1750){ iGo=i; break; }
+    let okGo=null, goD='reprise non vue (repédalez après l’arrêt)';
+    if(iGo>=0){ const seq=tk.slice(iGo,iGo+6).map(x=>x.tickRaw), jumps=seq.slice(1).map((v,i)=>v/seq[i]);
+      okGo = jumps.length>=2 && jumps.every(r=>r>=0.6&&r<=1.4);
+      goD='reprise : tickRaw '+seq.join(' → ')+(okGo?' (re-verrouillé, aucun saut > 40 %)':' (sauts > 40 % entre lignes)'); }
+    const d='arrêt : tickRaw ≥ 1750 '+dtS.toFixed(1)+' s après la dernière ligne > 4 km/h (≤ 3 s) · '+goD, ok=okStop&&okGo===true;
+    orgAdd('timeouts', ok?'OK':(okGo==null&&okStop?'ATT':'KO'), d);
+    return ok ? vOK('timeouts OK (v4, sur tickRaw) — '+d) : (okGo==null&&okStop) ? vATT(d) : vKO(d);
+  }
+  const fr=rFrames(ss).filter(f=>f.ver>0); if(!fr.length){ orgAdd('timeouts','KO','aucune trame patch'); return vKO('aucune trame patch'); }
+  let iStop=-1; for(let i=1;i<fr.length;i++) if(fr[i-1].p<4500 && fr[i].p>=4500){ iStop=i; break; }
+  if(iStop<0){ orgAdd('timeouts','KO','arrêt jamais vu (p < 4500 → 4500)'); return vKO('arrêt jamais vu : p n’est pas passé de < 4500 à 4500 (roue freinée jusqu’à l’arrêt ?)'); }
+  const tStop=fr[iStop].t, fe=fr.slice(iStop).find(f=>f.est>=1750), dtE=fe?(fe.t-tStop)/1000:null, okStop=dtE!=null&&dtE<=2;
+  let iGo=-1; for(let i=iStop+1;i<fr.length;i++) if(fr[i].p<4500){ iGo=i; break; }
+  let okGo=null, goD='reprise non vue (repédalez après l’arrêt)';
+  if(iGo>=0){ const tGo=fr[iGo].t, after=ss.filter(s=>s.t>=tGo && s.f && s.f.p>0 && s.f.p<4500), rat=after.slice(2,7).map(s=>s.f.est/s.f.p);
+    okGo = rat.length>0 && rat.every(r=>r>=0.85&&r<=1.0);
+    goD='reprise : est/p dès la 3ᵉ ligne = '+(rat.length?rat.map(r=>r.toFixed(2)).join(' / '):'–')+' (attendu 0,85-1,0)'; }
+  const d='arrêt : est ≥ 1750 '+(dtE!=null?dtE.toFixed(1)+' s':'jamais')+' après p = 4500 (≤ 2 s) · '+goD, ok=okStop&&okGo===true;
+  orgAdd('timeouts', ok?'OK':(okGo==null&&okStop?'ATT':'KO'), d);
+  return ok ? vOK('timeouts OK — '+d) : (okGo==null&&okStop) ? vATT(d) : vKO(d);
+}
+
+function buildProtoR(){
+  const S=[];
+  S.push({id:'R0', title:'Repos', dur:15, check:ckR0,
+    instr:'Ne touchez à rien pendant 15 s : roue et pédales immobiles, mains hors des commandes. Niveau quelconque.'});
+  S.push({id:'R1', title:'Pédales en arrière', dur:15, check:ckR1,
+    instr:'Niveau <b>0</b> au display. Tournez les manivelles <b>en arrière</b>, lentement et régulièrement, pendant 15 s (la roue ne doit pas être entraînée).'});
+  S.push({id:'R2', title:'Pédalage à vide', dur:20, check:ckR2,
+    instr:'Niveau <b>0</b>. Pédalez vers l’avant à ~60 tr/min <b>sans forcer</b> (la roue tourne à vide, sans assistance) pendant 20 s.'
+      +(rCadVal()?' Cadence saisie : <b>'+rCadVal()+' rpm</b>.':' (Saisir la cadence tenue dans « cadence R2 » donne les impulsions par tour.)')});
+  S.push({id:'R3', title:'Appui pédale', dur:25, check:ckR3,
+    instr:'Niveau <b>0</b>, <b>frein arrière serré</b>. Appuyez <b>fort</b> sur la pédale avant <b>3 fois 3 s</b>, en relâchant complètement ~3 s entre deux.'});
+  S.push({id:'R4', title:'Marche (walk assist)', dur:20, check:ckR4, wait:{label:'En attente de rotation de la roue (≥ 2 km/h)…', cond:d=>d.spdX10>=20},
+    instr:'Niveau quelconque. Maintenez la commande de <b>marche</b> (walk assist) du display : le moteur entraîne la roue seul, sans pédaler. Gardez-la enfoncée jusqu’à la fin du chrono.'});
+  S.push({id:'R5', title:'Démarrages ×6', dur:60, check:ckR5,
+    instr:'Niveau <b>1</b>. Six fois de suite : <b>pédalez 3 s</b> (le moteur doit prendre), puis <b>arrêtez 5 s</b> (la roue ralentit). Rythme régulier, sans forcer.'});
+  for(const m of R_MAX) S.push({id:'R6-'+m, title:'Palier Max speed '+m, dur:20, max:m, check:ss=>ckR6(ss,m),
+    wait:{label:'Réglez Max speed = '+m+' sur le display, puis pédalez — en attente de rotation (≥ 5 km/h)…', cond:d=>d.spdX10>=50},
+    instr:'Niveau <b>2</b>. Réglez <b>Max speed = '+m+'</b> sur le display, puis pédalez <b>doucement</b> pour garder le moteur actif : la bride Hall stabilise la roue vers <b>'+(1.1*m).toFixed(0)+' km/h</b>. Les 10 dernières secondes font le verdict.'});
+  S.push({id:'R7', title:'Arrêt / redémarrage', dur:20, check:ckR7,
+    instr:'Depuis le palier 36 : <b>arrêtez de pédaler</b>, laissez la roue ralentir puis <b>freinez</b> jusqu’à l’arrêt complet ; ensuite <b>repédalez</b> franchement pour relancer la roue.'});
+  return S;
+}
+
+function startProtoR(){
+  if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
+  if(!isRd45()){ alert('Phase R : réservée au moteur RD45 en firmware STOCK (protocole détecté = stock ET preset display = RD45).\n\nDétecté : '+$('vSrc').textContent+' / '+(motorSrc==null?'octet 19 absent':(MOTORS[motorSrc>>4]??'?'))+'.'); return; }
+  if(bench){ alert('Désarmez le mode banc : la phase R tourne en assistance normale.'); return; }
+  const pt=(lastF46&&lastF46.dec&&lastF46.dec.ver!=null)?{ver:lastF46.dec.ver, fix:lastF46.dec.fix}:null;
+  if(!pt && !confirm('Aucun bloc 0x46 décodé pour l’instant (display < 2.18.10-rd45log ?) : la plupart des verdicts seront vides. Continuer quand même ?')) return;
+  const steps=buildProtoR();
+  beep(1);   // le geste utilisateur débloque l’audio
+  log=[]; recording=true;
+  $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
+  proto={phase:'R', steps, idx:-1, curId:null, state:'running', t0:Date.now(), tWait:0, samples:[], all:[], results:[], org:{},
+         patch:pt, rCad:rCadVal(), tq10Rest:null, hallRatioPrev:null, timer:setInterval(protoTick,250)};
+  $('protoIdle').hidden=true; $('protoDone').hidden=true; $('protoRun').hidden=false;
+  $('pPhase').textContent='PHASE R — capteurs RD45, roue en l’air ('+rPatchTxt(pt)+')';
+  $('btnProtoRedo').hidden=false; $('btnProtoRedo').textContent='↻ Refaire l’étape';
+  nextStepR();
+}
+function redoStepR(){ const p=proto, st=p.steps[p.idx]; if(!st) return;
+  p.samples=[]; p.t0=Date.now(); p.tWait=p.t0; p.state=st.wait?'waiting':'running'; $('pWait').hidden=!st.wait; beep(1); }
+
+function nextStepR(){
+  const p=proto; if(!p) return; const now=Date.now();
+  if(p.idx>=0){ const st=p.steps[p.idx]; let r;
+    try{ r=st.check(p.samples); }catch(e){ r=vATT('verdict impossible : '+e.message); }
+    if(p.state==='skipped' && p.samples.length) r.d+=' (étape écourtée)';
+    p.results.push({id:st.id, title:st.title, ...r}); }
+  p.idx++; p.samples=[];
+  if(p.idx>=p.steps.length) return endProtoR(false);
+  const st=p.steps[p.idx]; p.curId=st.id; p.t0=now; p.tWait=now; p.state=st.wait?'waiting':'running';
+  $('pTitle').textContent=st.id+' — '+st.title+'  ('+st.dur+' s)';
+  $('pInstr').innerHTML=st.instr;
+  $('pWait').hidden=!st.wait; if(st.wait) $('pWait').textContent=st.wait.label;
+  $('pPrompt').hidden=true; $('pRes').hidden=true;
+  if(p.idx>0) beep(1);
+}
+
+function protoSampleR(d,now,st){
+  const p=proto, s={t:now, lvl:curLvl, stp:p.curId, ...d, f:(lastF46&&lastF46.dec)||null, fn:lastF46?lastF46.n:null};
+  p.all.push(s);
+  if(p.state==='waiting'){ if(!st.wait.cond(d)) return; p.state='running'; p.t0=now; $('pWait').hidden=true; }
+  if(p.state==='running') p.samples.push(s);
+}
+
+function protoTickR(){
+  const p=proto; if(!p) return; const st=p.steps[p.idx]; if(!st) return; const now=Date.now();
+  const stalled=lastPkt && (now-lastPkt>3000);
+  if(stalled){ p.t0+=250; $('pWait').hidden=false; $('pWait').textContent='⚠ Télémétrie interrompue — reconnectez le SW102 (bouton en haut), le chrono est en pause.'; }
+  else if(p.state==='waiting'){ $('pWait').hidden=false; $('pWait').textContent=st.wait.label+'  (« Étape suivante » pour passer)';
+    if(now-p.tWait>90000){ p.state='timed-out'; return nextStepR(); } }
+  else $('pWait').hidden=true;
+  const el=p.state==='running'?(now-p.t0)/1000:0;
+  $('pStepLeft').textContent = p.state==='waiting' ? 'en attente' : fmtT(st.dur-el);
+  $('pTotLeft').textContent = fmtT(protoTotal(p.steps,p.idx,el));
+  $('pBarStep').style.width=Math.min(100,el/st.dur*100)+'%';
+  const done=p.steps.slice(0,p.idx).reduce((a,x)=>a+x.dur,0), tot=p.steps.reduce((a,x)=>a+x.dur,0);
+  $('pBarTot').style.width=Math.min(100,(done+Math.min(el,st.dur))/tot*100)+'%';
+  // la mesure qui fait le verdict de l'étape, en gros et en couleur
+  const pr=$('pPrompt'); pr.hidden=false; pr.style.color='#fff'; pr.style.background='#2a3340';
+  const f=(lastF46&&lastF46.dec)||{}, v=lastSpdX10/10, v4=rV4(), id=st.id; let txt='';
+  if(id==='R0') txt='v '+v.toFixed(1)+' km/h · '+(v4?'tickRaw '+(rd45Live.tickRaw??'–'):'p '+(f.p??'–')+' · est '+(f.est??'–'))+' · TX22 '+(f.tq??'–');
+  else if(id==='R1'||id==='R2') txt = v4 ? 'cadence '+rd45Live.cadPps.toFixed(1)+' imp/s (compteur '+(f.cad??'–')+') · roue libre '+rd45Live.fwPs.toFixed(1)+'/s · TX22 '+(f.tq??'–')
+                                       : 'TX22 '+(f.tq??'–')+' · cadence / roue libre : n/a (patch v3)';
+  else if(id==='R3'){ txt='TX22 '+(f.tq??'–')+' · appuis '+rPulses(rFrames(p.samples)).length+'/3'+(v4?' · couple 10 bits '+(f.tq10??'–'):''); if((f.tq??0)>=8) pr.style.background='#1e6b3f'; }
+  else if(id==='R4'){ txt='v '+v.toFixed(1)+' km/h (3-8) · courant '+(f.cur??'–')+(v4?' · Hall '+(f.hall??'–'):''); pr.style.background = v>=3&&v<=8?'#1e6b3f':'#7a5c12'; }
+  else if(id==='R5'){ const s=rStarts(rFrames(p.samples)); txt='démarrages '+s.n+'/6 (vus '+s.starts+') · TX22 '+(f.tq??'–')+' · courant '+(f.cur??'–'); }
+  else if(st.max){ const tgt=1.1*st.max, dev=Math.abs(v-tgt);
+    txt='v '+v.toFixed(1)+' → '+tgt.toFixed(1)+' ± 2 (Max speed '+st.max+')'+(p.state==='running'&&el>=st.dur-10?' · fenêtre de mesure':'');
+    pr.style.background = dev<=2?'#1e6b3f':dev<=4?'#7a5c12':'#7a1f1c'; }
+  else if(id==='R7') txt='p '+(f.p??'–')+' · est '+(f.est??'–')+' · v '+v.toFixed(1)+' km/h';
+  pr.textContent=txt;
+  // ligne de vie : patch, rejets / min, erreur courante, niveau display
+  const cad=$('pCad'); cad.hidden=false; cad.style.background='#2a3340'; cad.style.color='var(--tx)';
+  cad.textContent=rPatchTxt(p.patch)+' · rejets '+rd45Live.rejMin+'/min · err '+(hist.length?hist[hist.length-1].err:'–')+' · niveau '+(curLvl??'–');
+  if(p.state==='running' && el>=st.dur){ p.state='timed-out'; nextStepR(); }
+}
+
+function endProtoR(aborted){
+  const p=proto; proto=null; clearInterval(p.timer);
+  recording=false;
+  $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
+  $('btnProtoRedo').hidden=true; $('btnProtoRedo').textContent='↻ Refaire le palier'; $('pCad').hidden=true;
+  // UART / erreurs sur TOUT le run : compteurs roulants inchangés et err = 0 partout
+  const a=p.all;
+  if(a.length){ const f0=a[0], f1=a[a.length-1], dCk=(f1.ckErr-f0.ckErr+256)%256, dCo=(f1.commErr-f0.commErr+256)%256, errs=a.filter(x=>x.err).length;
+    (p.org.uart=p.org.uart||[]).push({v:(dCk||dCo||errs)?'KO':'OK', d:'ckErr +'+dCk+', commErr +'+dCo+', err ≠ 0 sur '+errs+' / '+a.length+' lignes'
+      +(errs&&isRd45()?' ('+rd45ErrTxt(mx(a.map(x=>x.err)))+')':'')});
+    // drapeaux silencieux sur TOUT le run (v4) : un bit posé à n'importe quelle étape = KO nommé
+    if(p.patch&&p.patch.ver>=4){ const sil=rSilent(rFrames(a));
+      (p.org.drapeaux=p.org.drapeaux||[]).push({v:sil.length?'KO':'OK', d:'tout le run : '+(sil.length?sil.join(', '):'aucun drapeau silencieux')}); } }
+  const organs={};
+  for(const [k,label] of R_ORG){ const o=orgVerdict(p.org[k]); organs[k]={label, ...o, ...(o.v==='KO'?{next:R_NEXT[k]}:{})}; }
+  const next=R_ORG.filter(([k])=>organs[k].next).map(([k])=>organs[k].label+' : '+organs[k].next);
+  const extra={phase:'R', patch:p.patch, rCad:p.rCad, results:p.results, organs, next, aborted:!!aborted};
+  archiveLog('banc', 'protoR', extra);
+  $('protoRun').hidden=true; $('protoDone').hidden=false;
+  const ko=Object.values(organs).filter(o=>o.v==='KO').length, att=Object.values(organs).filter(o=>o.v==='ATT').length;
+  $('pDoneTitle').textContent=(aborted?'⚠ Run interrompu — ':'')+'Phase R ('+rPatchTxt(p.patch)+') : '+(ko?ko+' organe(s) en ÉCHEC':att?att+' point(s) d’attention':'tous les organes testés OK');
+  $('pVerdict').innerHTML='<tr><th>Organe</th><th>Verdict</th><th>Mesuré</th></tr>'
+    +R_ORG.map(([k])=>{ const o=organs[k]; return '<tr><td>'+o.label+'</td><td><span class="chip '+o.v+'">'+chipTxt(o.v)+'</span></td>'
+      +'<td style="font-size:12px">'+o.d+(o.next?'<br><b>Prochain run :</b> '+o.next:'')+'</td></tr>'; }).join('')
+    +'<tr><th colspan="3" style="padding-top:12px">Étapes</th></tr>'
+    +p.results.map(r=>'<tr><td>'+r.id+' '+r.title+'</td><td><span class="chip '+r.v+'">'+chipTxt(r.v)+'</span></td><td style="font-size:12px">'+r.d+'</td></tr>').join('');
+  window._lastProto={...extra};
+  benchUi();
+}
 
 /* ---------------------------------------------------------------------------
    MODE BANC — le moteur tourne SEUL sur consigne de duty.
@@ -2353,6 +3288,108 @@ $('btnRec').onclick = () => {
 $('btnDl').onclick = () => { const f = buildJsonl(); dlJsonl(f.text, f.name); };
 
 /* ---------------------------------------------------------------------------
+   FIABILITÉ SUR ANDROID (2026-09-21) — trois compléments à l'enregistrement.
+
+   1. WAKE LOCK ÉCRAN : pendant un enregistrement ou une phase guidée, l'écran ne doit pas
+      s'éteindre — Chrome Android passe alors la page en arrière-plan et les notifications
+      BLE ne sont plus livrées qu'en rafale au réveil. Acquis dès que (recording || proto),
+      ré-acquis sur visibilitychange (le système le relâche quand la page est cachée),
+      relâché quand plus rien ne tourne. Ignoré si l'API est absente.
+   2. RECONSTRUCTION DU TEMPS : run route du 2026-09-21 — 2 030 lignes sur 2 363 livrées en
+      0,75 s après un trou de 576 s. Le 0x04 porte un compteur seq u8 à 5 Hz (200 ms) :
+      quand deux 0x04 arrivent à moins de REC_BURST_MS, la ligne reçoit
+      t = t_précédent + 200 × Δseq (mod 256), tr = 1, et sa réception réelle dans ta.
+      La PREMIÈRE ligne d'une rafale porte tout le trou (Δt énorme) : elle y est rattachée
+      après coup, et à la fin de la rafale tout le bloc est ré-ancré sur la réception de sa
+      dernière ligne (= temps réel, le paquet le plus récent), sinon la rafale se placerait
+      APRÈS la fin réelle. Une rafale de moins de REC_BURST_MIN lignes est de la gigue BLE :
+      elle est rendue à ses temps de réception. La livraison a des hoquets (un Δt de ~240 ms
+      au milieu des 0,75 s du run du 21/09) : une rafale ne se clôt qu'après REC_HICCUP_N
+      paquets consécutifs revenus au rythme nominal — ces paquets sont chaînés à titre
+      provisoire, puis rendus à leur temps de réception si la rafale s'arrête vraiment là.
+      Δseq est modulo 256 : une perte de plus de 51 s est invisible (la rafale est alors
+      compressée, jamais décalée dans le futur). Le statut d'enregistrement signale toute
+      rafale > 5 s reconstruite.
+   3. GPS : watchPosition (haute précision) pendant l'enregistrement ; chaque ligne reçoit
+      gpsX10 (km/h × 10) et gpsAcc (m) si le dernier fix a ≤ 3 s, sinon null ; rien du
+      tout si la géolocalisation est refusée ou absente. Tuile « GPS » : vitesse GPS et
+      écart display / GPS en %.
+--------------------------------------------------------------------------- */
+let wakeLock = null;
+async function wakeAcquire(){
+  if(!('wakeLock' in navigator) || (wakeLock && !wakeLock.released)) return;
+  if(typeof document.visibilityState === 'string' && document.visibilityState !== 'visible') return;
+  try { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); }
+  catch(_) { wakeLock = null; }
+}
+function wakeRelease(){ const w = wakeLock; wakeLock = null; if(w){ try { w.release(); } catch(_){} } }
+const recActive = () => !!(recording || proto);
+function recAux(){ if(recActive()){ wakeAcquire(); gpsStart(); } else { wakeRelease(); gpsStop(); } }
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') recAux(); });
+setInterval(recAux, 1000);
+// après le gestionnaire du bouton (enregistré avant) : le geste utilisateur couvre wake lock et GPS
+for(const id of ['btnRec','btnProtoA','btnProtoB','btnProtoC','btnProtoS','btnProtoR']) $(id).addEventListener('click', recAux);
+
+const REC_BURST_MS = 50, REC_PERIOD_MS = 200, REC_BURST_MIN = 5, REC_HICCUP_N = 3;
+const recTs = { rx:null, seq:null, t:null, burst:null, prov:[], provN:0, last:null, warnS:0 };
+const recRestore = l => { l.t = l.ta; delete l.tr; delete l.ta; };
+function recStamp(now, seq){
+  const r = recTs, ds = r.seq == null ? 1 : (((seq - r.seq + 256) % 256) || 1); let t = now, tr = 0;
+  if(r.rx != null && now - r.rx < REC_BURST_MS){                    // rafale : chaîné sur seq
+    if(!r.burst) r.burst = [];
+    t = r.t + REC_PERIOD_MS*ds; tr = 1; r.prov = []; r.provN = 0;   // les provisoires précédents sont confirmés
+  } else if(r.burst && r.provN < REC_HICCUP_N){                      // rythme nominal : hoquet ou vraie fin ? chaîné à titre provisoire
+    t = r.t + REC_PERIOD_MS*ds; tr = 1; r.provN++;
+  } else { if(r.burst) recBurstEnd(); }
+  r.rx = now; r.seq = seq; r.t = t; return { t, tr, prov: tr && r.provN > 0 };
+}
+function recPush(line, ts){
+  const r = recTs;
+  if(!log.length){ r.burst = null; r.prov = []; r.provN = 0; r.last = null; r.warnS = 0; }   // nouvel enregistrement
+  log.push(line);
+  if(ts.tr){ if(!r.burst) r.burst = [];
+    if(!r.burst.length && r.last && !r.last.tr){ r.last.tr = 1; r.last.ta = r.last.t; r.burst.push(r.last); }   // la 1re ligne portait le trou
+    r.burst.push(line); if(ts.prov) r.prov.push(line); }
+  r.last = line;
+}
+function recBurstEnd(){
+  const r = recTs; let b = r.burst; const prov = new Set(r.prov);
+  r.burst = null; r.prov = []; r.provN = 0; if(!b) return;
+  for(const l of prov) recRestore(l);                               // la rafale s'arrêtait bien avant les provisoires
+  b = b.filter(l => !prov.has(l)); if(!b.length) return;
+  if(b.length < REC_BURST_MIN){ b.forEach(recRestore); return; }    // gigue BLE, pas une rafale
+  const last = b[b.length-1], shift = last.ta - last.t;             // ré-ancrage : le dernier paquet reçu est le plus récent
+  if(shift < 0) for(const l of b) l.t += shift;
+  const span = (last.t - b[0].t)/1000; if(span > 5 && span > r.warnS) r.warnS = span;
+}
+const recWarnTxt = () => recTs.warnS ? ' — ⚠ rafale de '+recTs.warnS.toFixed(0)+' s reconstruite sur seq (tr = 1)' : '';
+
+let gpsWatch = null, gpsFix = null, gpsState = '';   // gpsFix = {t, spd (m/s ou null), acc (m)}
+function gpsStart(){
+  if(gpsWatch != null || !navigator.geolocation) return;
+  try { gpsWatch = navigator.geolocation.watchPosition(
+      pos => { gpsFix = { t:Date.now(), spd:pos.coords.speed, acc:pos.coords.accuracy }; gpsState = ''; renderGps(); },
+      err => { gpsState = err.code === 1 ? 'refusé' : 'indisponible'; renderGps(); },
+      { enableHighAccuracy:true, maximumAge:1000, timeout:15000 }); }
+  catch(_) { gpsWatch = null; }
+}
+function gpsStop(){ if(gpsWatch != null && navigator.geolocation){ try { navigator.geolocation.clearWatch(gpsWatch); } catch(_){} } gpsWatch = null; }
+function gpsFields(now){
+  if(!gpsFix) return {};
+  const fresh = now - gpsFix.t <= 3000;
+  return { gpsX10: fresh && gpsFix.spd != null ? Math.round(gpsFix.spd*36) : null, gpsAcc: fresh ? Math.round(gpsFix.acc) : null };
+}
+function renderGps(){
+  const tile = $('gpsTile');
+  if(!gpsFix){ tile.hidden = !gpsState; if(gpsState){ $('vGps').textContent = '–'; $('vGpsU').textContent = 'GPS '+gpsState; } return; }
+  tile.hidden = false;
+  const fresh = Date.now() - gpsFix.t <= 3000, kmh = gpsFix.spd != null ? gpsFix.spd*3.6 : null, disp = lastSpdX10/10;
+  $('vGps').textContent = !fresh ? 'périmé' : kmh == null ? 'fix' : kmh.toFixed(1);
+  $('vGpsU').textContent = (fresh && kmh != null && kmh > 3 && disp > 0 ? 'display '+disp.toFixed(1)+' → '+((disp/kmh-1)*100).toFixed(0)+' % · ' : 'km/h · ')+'± '+Math.round(gpsFix.acc)+' m';
+}
+setInterval(() => { if(gpsFix) renderGps(); }, 1000);
+
+/* ---------------------------------------------------------------------------
    ARCHIVAGE GITHUB — depot prive SykloFR/syklo-logs.
    A chaque fin d'enregistrement (bouton Stop, fin de protocole, arret du mode
    banc) le JSONL part par l'API GitHub (PUT contents) avec le jeton saisi dans
@@ -2360,7 +3397,7 @@ $('btnDl').onclick = () => { const f = buildJsonl(); dlJsonl(f.text, f.name); };
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-09-08';
+const DASH_VERSION = '2026-09-21';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
@@ -2395,6 +3432,7 @@ function dlJsonl(text, name){
 }
 // Construit le fichier : nom, chemin dans le depot, texte (meta + echantillons).
 function buildJsonl(ctxOverride, tag, extra){
+  recBurstEnd();   // une rafale encore ouverte au Stop est ré-ancrée avant sérialisation
   const ctx = ctxOverride || $('arcCtx').value || 'route';
   const id = arcIdClean();
   const t0 = new Date(log.length ? log[0].t : Date.now()), t1 = new Date(log.length ? log[log.length-1].t : Date.now());
