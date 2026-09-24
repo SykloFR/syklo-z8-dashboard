@@ -331,7 +331,18 @@ Comparable uniquement à conditions égales (firmware moteur, preset display, st
 
 Constitue la base « loi d'assistance » d'un firmware (stock Tongsheng à répliquer sous
 OSF). **Aucun mode banc, aucune trame envoyée au display** : c'est l'opérateur qui est
-piloté. Spec : `chantier-z8-osf/specs/protocole-S-caracterisation-stock.md` (v3).
+piloté. Spec : `chantier-z8-osf/specs/protocole-S-caracterisation-stock.md` (**v4** du
+2026-09-24, section en tête — la v3 s'est révélée intenable au 1er banc réel).
+
+**v4 en bref** : mode **séance** par défaut, soit un seul run d'environ 12 min pédalées.
+Étalonnage L0 à 20 km/h en **résistance 40 / 70 / 100 %** (plus d'ERG : il part en
+spirale à basse cadence), puis L1→L5 à la charge du panneau (résistance 100 %) sur les
+paliers **20 et 14 km/h**, la traversée de coupure en L5 (option), et enfin un L0 de
+contrôle. Palier = **20 s cumulées** dans ±1,5 km/h au bon niveau : sortir de la bande
+exclut les échantillons sans rien remettre à zéro. Un échantillon compte après 1,5 s dans
+la bande et 4 s après le début du palier, 90 s max. Le BMS JBD se **reconnecte seul**.
+Fichier `…_banc-protoS-seance.jsonl`. Les modes « un niveau » et « étalonnage L0 seul »
+servent à refaire un morceau. Rodage à blanc : `node tools/dryrun-s.js index.html sortie.jsonl`.
 
 Principe : à **charge figée** (consigne du panneau « Home trainer », résistance 100 % en
 série 1 — jamais ERG pour les niveaux assistés, la vitesse s'emballerait) et à vitesse
@@ -342,21 +353,25 @@ exactement une cadence (`cadEst`, tuile « Cadence estimée » — 44/14 × 2 05
 
 | Mode | Étapes | Ce qu'on obtient |
 |---|---|---|
-| **Étalonnage L0 en ERG** | niveau 0 ; pour chaque vitesse (18, 22 km/h) : paliers ERG 100 / 150 / 200 / 250 W | à L0 pmeca = 100 % cycliste → couple T = P/ω connu → **étalonnage `torque` ADC ↔ N·m** sur une vraie plage (à résistance fixe le couple L0 est le MÊME à toutes les vitesses : un seul point, d'où l'ERG ici — sans moteur il est stable) |
-| **Grille vitesses** (un run = **un niveau**) | étape « niveau X au display » (attend le 0x01), puis paliers 10 / 14 / 18 / 22 km/h ; option traversée de coupure 20 → 26 km/h ×2 | médianes par palier : v, cad≈, `torque`, `cur`, `pmeca`, `pbat` ; coupure : vitesse où `cur` tombe sous 25 % de sa valeur à 20 km/h |
+| **Séance** (défaut) | L0 : 20 km/h × résistance 40 / 70 / 100 % → L1…L5 : paliers 20 et 14 km/h à la charge du panneau → coupure 20 → 26 km/h en L5 (option) → L0 de contrôle | tout d'un coup, ~12 min pédalées ; chaque étape « niveau X » attend le display = pause |
+| **Un niveau** | étape « niveau X au display » puis les paliers de la liste ; option coupure | refaire un niveau |
+| **Étalonnage L0 seul** | L0, charges du champ (résistance %, ou `150W` = ERG) à la vitesse du champ | à L0 pmeca = 100 % cycliste → couple T = P/ω connu → **étalonnage `torque` ADC ↔ N·m** (à charge fixe unique le couple L0 serait le même à toutes les vitesses : d'où plusieurs résistances) |
 
-Palier = **30 s continues** dans la bande ±1 km/h **au bon niveau** (sortie > 2 s ou
-changement de niveau = chrono à zéro), 120 s max (au-delà : dernière fenêtre ≥ 10 s en
-ATTENTION, sinon ÉCHEC) ; **bip** et avance automatique ; « Refaire le palier » /
-« Étape suivante ». Consigne en gros et en couleur (vert dans la bande, orange à ±2,
-rouge au-delà ou mauvais niveau), ligne de vie cadence ≈ / couple / cur / roue / batt.
+Palier = **20 s cumulées** dans ±1,5 km/h au bon niveau. Les échantillons hors bande sont
+exclus, rien n'est remis à zéro. Un échantillon compte après 1,5 s dans la bande et 4 s
+après le début du palier ; 90 s max (≥ 10 s cumulées = ATTENTION, sinon ÉCHEC). **Bip**
+et avance automatique ; « Refaire le palier » / « Étape suivante ». Consigne en gros et en
+couleur (vert dans la bande, orange à ±3, rouge au-delà ou mauvais niveau), ligne de vie
+cadence ≈ / couple / cur / roue / batt (« ⚠ BMS MUET » si le BMS décroche).
 Garde-fous : télémétrie, banc désarmé, trainer (pmeca) et contrôle FTMS, ERG hors
-étalonnage, pack < 43 V, **stock sans BMS** (pas de pbat), AWE sous OSF.
+étalonnage, grille ≠ résistance 100 %, pack < 43 V, **stock sans BMS** (pas de pbat),
+AWE sous OSF.
 
-Séance type : étalonnage L0 → grille L0 → L1 … L5 → **L0 refait** (dérive capteur /
-thermique) ; street **ON** (comme vendu) ; ≥ 3 séances (jours, états de charge).
-Fichiers `…_banc-protoS-L<n>.jsonl` (`-L0-calib` pour l'étalonnage), `stp` = palier,
-`stb` = 1 dans la fenêtre stable, `meta` = braquet, consigne trainer, street, médianes.
+Campagne : street **ON** (comme vendu), charge et braquet figés, **2 séances courtes**
+(jours, états de charge) ; CV(pbat) et CV(pmeca) < 10 % par palier = base validée, sinon
+3ᵉ séance ou run long. Fichier `…_banc-protoS-seance.jsonl` (ou `-L<n>`, `-L0-calib`),
+`stp` = palier (`S-L0-r70-v20` = résistance 70 %, `S-L3-v14`), `stb` = 1 sur les
+échantillons comptés, `meta` = braquet, consigne trainer, street, médianes.
 
 Dépouillement : `python tools/protoS-report.py <dossier ou fichiers>` (`--id`, `--csv`) —
 étalonnage sur tous les L0, puis par charge et par niveau × vitesse : P_cycliste,

@@ -200,14 +200,15 @@
       <button id="btnProtoC">▶ Phase C — pédalage humain (~3 min 30)</button>
     </div>
     <div class="bar" style="margin:4px 0 6px">
-      <button id="btnProtoS" style="background:#6b3fa0">▶ Phase S — niveau × vitesses, pédalage (stock ou OSF, ~5 min)</button>
+      <button id="btnProtoS" style="background:#6b3fa0">▶ Phase S — niveau × vitesses, pédalage (stock ou OSF)</button>
       <label class="sp">mode <select id="sMode">
-        <option value="grid">grille vitesses (charge du panneau)</option>
-        <option value="calib">étalonnage L0 en ERG (paliers W)</option></select></label>
+        <option value="seance">séance : étalonnage L0 → L1…L5 → L0 (~12 min)</option>
+        <option value="grid">un niveau (grille, charge du panneau)</option>
+        <option value="calib">étalonnage L0 seul</option></select></label>
       <label class="sp">niveau <select id="sLvl"><option value="auto">courant (display)</option>
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
-      <label class="sp">paliers km/h <input id="sSpeeds" size="11" value="10,14,18,22"></label>
-      <label class="sp" id="sErgLbl" title="mode étalonnage : puissances ERG imposées, aux vitesses de la liste « étalonnage »">ERG W <input id="sErgs" size="14" value="100,150,200,250"> à <input id="sCalSpeeds" size="5" value="18,22"> km/h</label>
+      <label class="sp" title="vitesses des paliers assistés (et du L0 de contrôle en fin de séance : la 1re)">paliers km/h <input id="sSpeeds" size="8" value="20,14"></label>
+      <label class="sp" id="sErgLbl" title="étalonnage L0 : résistances trainer en % à vitesse fixe (stable, la charge suit la vitesse). Suffixe W = ERG (ex. 150W) — déconseillé à basse cadence (spirale)">charges L0 <input id="sErgs" size="10" value="40,70,100"> % à <input id="sCalSpeeds" size="4" value="20"> km/h</label>
       <label class="sp">braquet <input id="sChainring" size="2" value="44"> / <input id="sCog" size="2" value="14"></label>
       <label class="sp">circ. mm <input id="sCirc" size="4" value="2050"></label>
       <label class="sp"><input type="checkbox" id="sCut"> + coupure 20→26</label>
@@ -239,20 +240,21 @@
       L'enregistrement JSONL démarre et se télécharge automatiquement (champ
       <code>bset</code> = consigne envoyée).<br>
       <b style="color:#b78cff">S</b> = <b>caractérisation niveau × vitesse</b> en pédalage,
-      mode normal, <b>stock OU OSF</b> (aucun mode banc) : <b>un run = un niveau</b>, paliers de
-      vitesse tenus <b>30 s stables</b> (±1 km/h, sortie &gt; 2 s = chrono à zéro, bip et
-      avance automatique) à <b>charge figée</b> = la consigne du panneau « Home trainer »
-      (série 1 : résistance 100 %, jamais ERG — la charge doit croître avec la vitesse).
-      Cadence estimée depuis la vitesse et le braquet (44/14, 2 050 mm → 10 km/h = 26 rpm,
-      22 km/h = 57 rpm). Street <b>ON</b> comme vendu. Ordre d'une séance : <b>étalonnage L0 en
-      ERG</b> (paliers de puissance à vitesse fixe : à L0 la puissance roue est 100 % cycliste,
-      donc chaque palier donne un point couple ADC ↔ N·m ; sans moteur l'ERG est stable — à
-      résistance fixe le couple L0 serait le MÊME à toutes les vitesses, un seul point), puis
-      la <b>grille L0, L1→L5</b> à résistance figée, et <b>L0 refait en fin de séance</b>. Sous stock, <code>cur</code> = courant <b>phase</b> et
-      <code>pow</code> n'est pas la puissance batterie : <b>connectez le BMS JBD</b> pour avoir
-      la puissance batterie réelle (<code>pbat</code>) dans le JSONL. Fichier
-      <code>…_banc-protoS-L&lt;n&gt;.jsonl</code>, <code>stp</code> = palier, <code>stb</code> = 1 dans la
-      fenêtre stable, médianes par palier dans la ligne <code>meta</code>.<br>
+      mode normal, <b>stock OU OSF</b> (aucun mode banc). Mode <b>séance</b> (par défaut, ~12 min
+      pédalés, un seul run) : <b>étalonnage L0</b> à 20 km/h en <b>résistance 40 / 70 / 100 %</b>
+      (à L0 la puissance roue est 100 % cycliste → 3 couples connus à la même cadence ; résistance
+      = stable, l'ERG part en spirale à basse cadence), puis <b>L1→L5</b> à la charge du panneau
+      « Home trainer » (<b>résistance 100 %</b>, jamais ERG) sur les paliers 20 et 14 km/h, puis
+      un <b>L0 de contrôle</b> (dérive). Chaque changement de niveau = pause libre. Palier =
+      <b>20 s CUMULÉES</b> dans la bande ±1,5 km/h au bon niveau (sortir ne remet rien à zéro ;
+      4 s d'établissement ; 90 s max), bip et avance automatique. Modes « un niveau » et
+      « étalonnage L0 seul » pour refaire un morceau. Cadence estimée depuis la vitesse et le
+      braquet (44/14, 2 050 mm → 14 km/h = 36 rpm, 20 km/h = 52 rpm). Street <b>ON</b> comme
+      vendu. Sous stock, <code>cur</code> = courant <b>phase</b> et <code>pow</code> n'est pas la
+      puissance batterie : <b>connectez le BMS JBD</b> (<code>pbat</code>, reconnexion
+      automatique s'il décroche). Fichier <code>…_banc-protoS-seance.jsonl</code> (ou
+      <code>-L&lt;n&gt;</code>), <code>stp</code> = palier, <code>stb</code> = 1 sur les
+      échantillons comptés, médianes par palier dans la ligne <code>meta</code>.<br>
       <b style="color:#e08a6a">R</b> = <b>cycle capteurs RD45</b> (moteur roue, firmware <b>stock</b> + patch Syklo
       speedfix v3/v4) : vélo sur pied, <b>roue arrière en l'air</b>, aucun trainer ni BMS. L'opérateur est
       guidé et fait les réglages <b>sur le display</b> (niveau, Max speed, marche) : repos, pédales en
@@ -821,7 +823,7 @@ function handle04(dv) {
   // t = temps reconstruit sur seq quand les paquets arrivent en rafale (tr = 1, ta = réception réelle) ;
   // r_* = bloc 0x46 décodé (RD45) ; gpsX10 / gpsAcc = dernier fix GPS (≤ 3 s) — voir « FIABILITÉ SUR ANDROID »
   const ts = recStamp(now, d.seq);
-  if (recording) { recPush({ t:ts.t, ...(ts.tr ? { tr:1, ta:now } : {}), stp:(proto?proto.curId:undefined), stb:(proto&&proto.phase==='S'&&proto.stableSince)?1:undefined,
+  if (recording) { recPush({ t:ts.t, ...(ts.tr ? { tr:1, ta:now } : {}), stp:(proto?proto.curId:undefined), stb:(proto&&proto.phase==='S'&&sCounted(proto,d,now))?1:undefined,
       bset:(bench&&bench.running)?Math.round(bench.sentD):undefined, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d,
       ...sBmsFields(now),
       ...(lastF46 ? { f46:lastF46.hex, f46age:lastF46.age, f46n:lastF46.n, f46len:lastF46.len } : {}),
@@ -1142,24 +1144,50 @@ function bmsOnNotify(ev){
 }
 // champs JSONL (vides si BMS absent ou muet depuis > 3 s)
 function sBmsFields(now){ return (bms && now-bms.t<3000) ? {vbat:+bms.v.toFixed(2), ibat:+bms.i.toFixed(2), pbat:+bms.p.toFixed(1)} : {}; }
+/* Ce BMS JBD décroche souvent (constaté aussi avec SykloConnect) : sur déconnexion NON demandée,
+   on garde l'objet appareil et on se reconnecte seul (gatt.connect, sans sélecteur) — 5 essais,
+   2 s d'écart. Pendant ce temps sBmsFields() rend {} (données > 3 s) : aucun pbat périmé au JSONL. */
+let bmsManual=false;
+async function bmsSetup(dev){
+  const gatt=await dev.gatt.connect();
+  const svc=await gatt.getPrimaryService(BMS_SVC);
+  const nt=await svc.getCharacteristic(BMS_NOTIFY);
+  await nt.startNotifications(); nt.addEventListener('characteristicvaluechanged', bmsOnNotify);
+  bmsWrite=await svc.getCharacteristic(BMS_WRITE); bmsDev=dev; bmsBuf=[];
+  const poll=async()=>{ if(!bmsWrite) return;
+    try{ if(bmsWrite.properties.write) await bmsWrite.writeValue(BMS_CMD03); else await bmsWrite.writeValueWithoutResponse(BMS_CMD03); }catch(_){ } };
+  if(bmsTimer) clearInterval(bmsTimer);
+  bmsTimer=setInterval(poll,1000); poll();
+  $('btnBms').textContent=(dev.name||'BMS')+' connecté'; $('btnBms').className='sec ok';
+  $('vBmsU').textContent='en attente de la trame 03…';
+}
+async function bmsOnDisconnect(ev){
+  const dev=ev.target;
+  if(bmsManual){ bmsManual=false; bmsReset(); return; }
+  bmsWrite=null; if(bmsTimer){ clearInterval(bmsTimer); bmsTimer=null; }
+  for(let i=1;i<=5;i++){
+    $('btnBms').textContent='BMS : reconnexion '+i+'/5…'; $('btnBms').className='sec busy';
+    await new Promise(r=>setTimeout(r,2000));
+    try{ await bmsSetup(dev); linkLog('BMS reconnecté (essai '+i+')'); return; }catch(_){}
+  }
+  bmsReset(); $('vBmsU').textContent='BMS perdu (5 essais) — reconnectez-le (bouton)'; linkLog('BMS perdu après 5 essais');
+}
+/* Onglet fermé / rechargé : on libère EXPLICITEMENT les trois liens BLE. Sans ça, Windows garde
+   parfois le lien du BMS JBD ouvert : le BMS n'émet plus et n'apparaît plus dans le sélecteur
+   (constaté le 2026-09-24 — seul remède alors : Bluetooth du PC off/on). */
+addEventListener('pagehide', ()=>{
+  bmsManual=true;
+  for(const d of [bmsDev, sw102Dev, trainerDev]) try{ if(d && d.gatt && d.gatt.connected) d.gatt.disconnect(); }catch(_){}
+});
 $('btnBms').onclick=async()=>{
-  if(bmsDev){ try{ bmsDev.gatt.disconnect(); }catch(_){ bmsReset(); } return; }
+  if(bmsDev){ bmsManual=true; try{ bmsDev.gatt.disconnect(); }catch(_){ bmsManual=false; bmsReset(); } return; }
   try{
     $('btnBms').textContent='Recherche…'; $('btnBms').className='sec busy';
     const dev=await navigator.bluetooth.requestDevice({
       filters:[{services:[BMS_SVC]},{namePrefix:'SYKLO'},{namePrefix:'JBD'},{namePrefix:'xiaoxiang'}],
       optionalServices:[BMS_SVC] });
-    dev.addEventListener('gattserverdisconnected', bmsReset);
-    const gatt=await dev.gatt.connect();
-    const svc=await gatt.getPrimaryService(BMS_SVC);
-    const nt=await svc.getCharacteristic(BMS_NOTIFY);
-    await nt.startNotifications(); nt.addEventListener('characteristicvaluechanged', bmsOnNotify);
-    bmsWrite=await svc.getCharacteristic(BMS_WRITE); bmsDev=dev;
-    const poll=async()=>{ if(!bmsWrite) return;
-      try{ if(bmsWrite.properties.write) await bmsWrite.writeValue(BMS_CMD03); else await bmsWrite.writeValueWithoutResponse(BMS_CMD03); }catch(_){ } };
-    bmsTimer=setInterval(poll,1000); poll();
-    $('btnBms').textContent=(dev.name||'BMS')+' connecté'; $('btnBms').className='sec ok';
-    $('vBmsU').textContent='en attente de la trame 03…';
+    dev.addEventListener('gattserverdisconnected', bmsOnDisconnect);
+    await bmsSetup(dev);
   }catch(e){ bmsReset(); $('vBmsU').textContent='erreur : '+e.message; }
 };
 
@@ -2440,7 +2468,7 @@ $('btnProtoR').onclick=()=>startProto('R');
 $('btnProtoRedo').onclick=()=>{ const p=proto; if(!p) return;
   if(p.phase==='R') return redoStepR();
   if(p.phase!=='S') return;
-  p.samples=[]; p.stableSince=null; p.lastIn=0; p.acq=null; p.t0=Date.now(); beep(1); };
+  p.samples=[]; p.inSince=null; p.cum=0; p.lastT=null; p.t0=Date.now(); beep(1); };
 
 /* ---------------------------------------------------------------------------
    PHASE S — CARACTÉRISATION NIVEAU × VITESSE EN PÉDALAGE (2026-09-17)
@@ -2460,23 +2488,33 @@ $('btnProtoRedo').onclick=()=>{ const p=proto; if(!p) return;
    (dépouillement : tools/protoS-report.py). Le BMS JBD, s'il est connecté, donne en
    plus la puissance batterie réelle (pbat) — la grandeur du banc de certification.
 
-   Stabilité : fenêtre = `stable` s CONTINUES dans la bande ±`band` km/h au bon niveau ;
-   une sortie de plus de 2 s remet le chrono à zéro ; `max` s par palier, au-delà on
-   garde la dernière fenêtre si ≥ 10 s (ATTENTION) sinon KO. Bip + avance automatique
-   (mains occupées). Médianes de la fenêtre acquise → `results` de la ligne meta.
+   Acquisition (v4, 2026-09-24 — la v3 exigeait 30 s CONTINUES à ±1 km/h avec remise à
+   zéro sur sortie > 2 s : intenable au premier banc réel à 26-47 rpm) : on CUMULE le
+   temps passé dans la bande ±`band` km/h au bon niveau ; un échantillon compte s'il est
+   dans la bande depuis ≥ S_DEBOUNCE ms (pas les simples traversées) et après S_SETTLE ms
+   de palier (changement de charge / de vitesse). Les échantillons hors bande sont exclus,
+   rien n'est remis à zéro. Palier acquis à `stable` s cumulées ; `max` s au-delà : ≥ 10 s
+   cumulées = ATTENTION, sinon KO. Médianes des échantillons comptés (`stb` = 1) → meta.
+
+   Étalonnage L0 (v4) : en RÉSISTANCE à vitesse fixe (40/70/100 % → 3 couples à la même
+   cadence), stable comme la grille. L'ERG (suffixe W) reste possible mais part en spirale
+   à basse cadence (cadence ↓ → couple ↑) — constaté le 2026-09-24 à 47 rpm.
+   Mode « séance » : étalonnage L0 → L1…L5 → L0 de contrôle en UN run (~12 min pédalés) ;
+   chaque étape « niveau » attend le display : c'est la pause de l'opérateur.
 --------------------------------------------------------------------------- */
-const S_KEY='protoS.v1';
-const S_DEF={mode:'grid', speeds:'10,14,18,22', ergs:'100,150,200,250', calSpeeds:'18,22', chainring:44, cog:14, circ:2050, band:1.0, stable:30, max:120, cut:false};
+const S_KEY='protoS.v2';
+const S_DEF={mode:'seance', speeds:'20,14', ergs:'40,70,100', calSpeeds:'20', chainring:44, cog:14, circ:2050, band:1.5, stable:20, max:90, cut:false};
+const S_DEBOUNCE=1500, S_SETTLE=4000;
 let sGear={chainring:S_DEF.chainring, cog:S_DEF.cog, circ:S_DEF.circ};
 function sGearRead(){ return {chainring:+$('sChainring').value||44, cog:+$('sCog').value||14, circ:+$('sCirc').value||2050}; }
 function sLoad(){
   let o={}; try{ o=JSON.parse(localStorage.getItem(S_KEY)||'{}'); }catch(_){}
   const p={...S_DEF,...o};
-  $('sMode').value=p.mode||'grid'; $('sSpeeds').value=p.speeds; $('sErgs').value=p.ergs; $('sCalSpeeds').value=p.calSpeeds;
+  $('sMode').value=p.mode||'seance'; $('sSpeeds').value=p.speeds; $('sErgs').value=p.ergs; $('sCalSpeeds').value=p.calSpeeds;
   $('sChainring').value=p.chainring; $('sCog').value=p.cog; $('sCirc').value=p.circ; $('sCut').checked=!!p.cut;
   sGear=sGearRead(); sModeUi();
 }
-function sModeUi(){ const c=$('sMode').value==='calib'; $('sErgLbl').style.opacity=c?'1':'.45'; $('sLvl').disabled=c; $('sCut').disabled=c; }
+function sModeUi(){ const m=$('sMode').value; $('sErgLbl').style.opacity=m==='grid'?'.45':'1'; $('sLvl').disabled=m!=='grid'; $('sCut').disabled=m==='calib'; }
 $('sMode').onchange=sModeUi;
 function sParams(){
   const g=sGearRead();
@@ -2506,32 +2544,50 @@ function beep(n){
 const med=a=>{ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2?s[m]:(s[m-1]+s[m])/2; };
 
 const numList=t=>String(t).split(/[,; ]+/).map(Number).filter(v=>v>0);
+/* Charges d'étalonnage : « 40,70,100 » = résistances % ; suffixe W = ERG (« 150W »). */
+const sCharges=t=>String(t).split(/[,; ]+/).map(s=>s.trim()).filter(Boolean)
+  .map(s=>/w$/i.test(s)?{erg:+s.slice(0,-1)}:{res:+s}).filter(c=>(c.erg||c.res)>0);
+function sLevelStep(lvl, pause){
+  return {id:'S-L'+lvl+'-lvl', kind:'level', lvl, dur:0, title:'Niveau '+lvl+' au display',
+    instr:(pause?'<b>Pause possible</b> : soufflez, puis ':'')+'mettez le display au niveau <b>'+lvl+'</b> (▲/▼) et pédalez tranquillement — la suite part toute seule 3 s après que le display remonte le niveau.'};
+}
+function sPlateau(lvl, v, p, c){
+  const lab = c ? (c.erg ? 'ERG '+c.erg+' W' : 'résistance '+c.res+' %') : null;
+  return {id:'S-L'+lvl+(c?(c.erg?'-e'+c.erg:'-r'+c.res):'')+'-v'+v, kind:'plateau', lvl, vT:v,
+    erg:c&&c.erg||null, res:c&&c.res||null, dur:p.stable,
+    title:(c?'Étalonnage L0 — '+lab+' à ':'Niveau '+lvl+' — palier ')+v+' km/h',
+    instr:(c?(c.erg?'Le trainer impose <b>'+c.erg+' W</b> (ERG : restez dans le HAUT de la bande, si la cadence baisse il durcit). ':'Le trainer passe en <b>'+lab+'</b>. ')
+            +'Sans assistance, la puissance roue est 100 % la vôtre. ':'')
+      +'Tenez <b>'+v+' km/h</b> (±'+p.band+' km/h ≈ '+cadEst(v*10).toFixed(0)+' rpm) : seul le temps DANS la bande compte, il se cumule ('+p.stable+' s), sortir ne remet rien à zéro. Assis, régulier ; ne touchez pas au niveau.'
+      +(c?' Trop dur ? « Étape suivante ».':'')};
+}
+function sCutStep(lvl){
+  return {id:'S-L'+lvl+'-cut', kind:'sweep', lvl, dur:90, title:'Niveau '+lvl+' — traversée de coupure',
+    instr:'Suivez le guide : montée <b>lente</b> de 20 à 26 km/h (≈ 6 s par km/h) puis relâchez 10 s — deux passages. Street ON requis (sinon pas de coupure à 25).'};
+}
 function buildProtoS(lvl, p){
-  const steps=[{id:'S-L'+lvl+'-lvl', kind:'level', lvl, dur:0, title:'Niveau '+lvl+' au display',
-    instr:'Mettez le display au niveau <b>'+lvl+'</b> (▲/▼) et pédalez tranquillement — la suite part toute seule 3 s après que le display remonte le niveau.'}];
-  if(p.mode==='calib'){
-    /* ÉTALONNAGE L0 EN ERG : à chaque vitesse, paliers de puissance imposée par le trainer.
-       À L0 la puissance roue est 100 % cycliste → couple T = P/ω connu à chaque palier,
-       le signal `torque` s'étalonne (ADC ↔ N·m) sur une vraie plage de couple. Deux vitesses
-       pour vérifier que l'étalonnage ne dépend pas de la cadence. */
-    const speeds=numList(p.calSpeeds), ergs=numList(p.ergs);
-    for(const v of speeds) for(const w of ergs) steps.push({id:'S-L0-e'+w+'-v'+v, kind:'plateau', lvl:0, vT:v, erg:w, dur:p.stable,
-      title:'Étalonnage L0 — ERG '+w+' W à '+v+' km/h',
-      instr:'Le trainer impose <b>'+w+' W</b> : tenez <b>'+v+' km/h</b> (≈ '+cadEst(v*10).toFixed(0)+' rpm, ±'+p.band+' km/h). Sans assistance, cette puissance est 100 % la vôtre. Palier trop dur ? « Étape suivante ».'});
+  const calPl=()=>{ const out=[]; for(const v of numList(p.calSpeeds)) for(const c of sCharges(p.ergs)) out.push(sPlateau(0, v, p, c)); return out; };
+  if(p.mode==='calib') return {steps:[sLevelStep(0), ...calPl()], speeds:numList(p.calSpeeds)};
+  const speeds=numList(p.speeds);
+  if(p.mode==='seance'){
+    /* SÉANCE : étalonnage L0 (charges du champ, vitesse fixe) → L1…L5 à la charge du panneau
+       (paliers de la liste) → coupure éventuelle en L5 → L0 de contrôle (1re vitesse) :
+       dérive capteur / thermique sur la même ligne que le L0 à charge de grille. */
+    const steps=[sLevelStep(0), ...calPl()];
+    for(let l=1;l<=5;l++){ steps.push(sLevelStep(l, true)); for(const v of speeds) steps.push(sPlateau(l, v, p)); }
+    if(p.cut) steps.push(sCutStep(5));
+    steps.push(sLevelStep(0, true), sPlateau(0, speeds[0], p));
     return {steps, speeds};
   }
-  const speeds=numList(p.speeds);
-  for(const v of speeds) steps.push({id:'S-L'+lvl+'-v'+v, kind:'plateau', lvl, vT:v, dur:p.stable,
-    title:'Niveau '+lvl+' — palier '+v+' km/h',
-    instr:'Tenez <b>'+v+' km/h</b> (±'+p.band+' km/h ≈ '+cadEst(v*10).toFixed(0)+' rpm) : le chrono ne compte que dans la bande, une sortie de plus de 2 s le remet à zéro. Assis, régulier, sans à-coups ; ne touchez pas au niveau.'});
-  if(p.cut) steps.push({id:'S-L'+lvl+'-cut', kind:'sweep', lvl, dur:90, title:'Niveau '+lvl+' — traversée de coupure',
-    instr:'Suivez le guide : montée <b>lente</b> de 20 à 26 km/h (≈ 6 s par km/h) puis relâchez 10 s — deux passages. Street ON requis (sinon pas de coupure à 25).'});
+  const steps=[sLevelStep(lvl), ...speeds.map(v=>sPlateau(lvl, v, p))];
+  if(p.cut) steps.push(sCutStep(lvl));
   return {steps, speeds};
 }
 
 async function sApplyTrainer(st){
   const t=proto&&proto.trainer; if(!t||!ftmsCtrl) return;
-  if(st && st.erg) return trainerTargetPowerW(st.erg);     // étalonnage : ERG par étape
+  if(st && st.erg) return trainerTargetPowerW(st.erg);     // étalonnage : charge par étape
+  if(st && st.res) return trainerResistancePct(st.res);
   if(t.mode==='res') await trainerResistancePct(t.val);
   else if(t.mode==='grade') await trainerGradePct(t.val);
   else await trainerTargetPowerW(t.val);
@@ -2541,12 +2597,13 @@ function startProtoS(){
   if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
   if(bench){ alert('Désarmez le mode banc : la phase S tourne en assistance normale.'); return; }
   if(curLvl==null){ alert('Niveau d’assistance inconnu : attendez le paquet 0x01 (~2 s) et relancez.'); return; }
-  const calib=$('sMode').value==='calib';
-  const sel=$('sLvl').value, lvl = calib ? 0 : sel==='auto' ? curLvl : +sel;
-  if(calib && !ftmsCtrl){ alert('Étalonnage L0 : le contrôle FTMS du trainer est indispensable (paliers ERG imposés). Connectez le home trainer.'); return; }
+  const mode=$('sMode').value, calib=mode==='calib', seance=mode==='seance';
+  const sel=$('sLvl').value, lvl = calib ? 0 : seance ? null : sel==='auto' ? curLvl : +sel;
+  if((calib||seance) && !ftmsCtrl){ alert('Étalonnage L0 : le contrôle FTMS du trainer est indispensable (charges imposées par palier). Connectez le home trainer.'); return; }
   if(!trainerDev && !confirm('Home trainer NON connecté : sans pmeca la phase S perd sa mesure pivot (puissance roue). Continuer quand même ?')) return;
-  const trMode=calib?'erg-calib':$('trMode').value, trVal=calib?null:+$('trVal').value;
-  if(!calib && trMode==='erg' && !confirm('Trainer en ERG : la charge ne croît pas avec la vitesse, les paliers assistés seront difficiles à tenir (la grille se fait en résistance fixe ; l’ERG est réservé à l’étalonnage L0). Continuer en ERG ?')) return;
+  const trMode=calib?'calib':$('trMode').value, trVal=calib?null:+$('trVal').value;
+  if(!calib && trMode==='erg' && !confirm('Trainer en ERG : la charge ne croît pas avec la vitesse, les paliers assistés seront difficiles à tenir (la grille se fait en résistance fixe). Continuer en ERG ?')) return;
+  if(!calib && trMode==='res' && trVal!==100 && !confirm('Charge de la grille = résistance '+trVal+' % (panneau Home trainer) ; la campagne se fait à 100 %. Continuer à '+trVal+' % ?')) return;
   if(!calib && trainerDev && !ftmsCtrl && !confirm('Pas de contrôle FTMS : réglez la charge à la main sur le trainer et ne la changez plus de la campagne. Continuer ?')) return;
   if(lastVoltX10 && lastVoltX10<430 && !confirm('Pack < 43 V ('+(lastVoltX10/10).toFixed(1)+' V) : run noté « pack bas », les pics seront déformés. Continuer ?')) return;
   if(isStock() && !bmsDev && !confirm('Firmware STOCK sans BMS connecté : le JSONL n’aura AUCUNE puissance batterie fiable (cur = courant phase). Continuer sans pbat ?')) return;
@@ -2558,12 +2615,12 @@ function startProtoS(){
   log=[]; recording=true;
   $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
   proto={phase:'S', steps, idx:-1, curId:null, state:'running', t0:Date.now(), samples:[], results:[], lvl, params:p, speeds,
-         trainer:{mode:trMode, val:trVal, ctrl:!!ftmsCtrl, ...(calib?{ergs:numList(p.ergs)}:{})}, calib,
-         stableSince:null, lastIn:0, acq:null, timer:setInterval(protoTick,250)};
+         trainer:{mode:trMode, val:trVal, ctrl:!!ftmsCtrl, ...(calib||seance?{calib:p.ergs, calSpeeds:numList(p.calSpeeds)}:{})}, calib, seance,
+         bmsAtStart:!!bmsDev, inSince:null, cum:0, lastT:null, timer:setInterval(protoTick,250)};
   $('protoIdle').hidden=true; $('protoDone').hidden=true; $('protoRun').hidden=false;
-  $('pPhase').textContent='PHASE S — '+(calib?'étalonnage L0 en ERG':'niveau '+lvl+' × vitesses')+', pédalage ('+(isStock()?'STOCK':'OSF')+(bmsDev?', BMS':'')+')';
+  $('pPhase').textContent='PHASE S — '+(calib?'étalonnage L0':seance?'séance L0 → L5 → L0':'niveau '+lvl+' × vitesses')+', pédalage ('+(isStock()?'STOCK':'OSF')+(bmsDev?', BMS':'')+')';
   $('btnProtoRedo').hidden=false;
-  if(!calib) sApplyTrainer();
+  if(!calib && !seance) sApplyTrainer();
   nextStepS();
 }
 
@@ -2581,19 +2638,16 @@ function sStepResult(p, st){
   if(st.kind==='level')
     return {...base, v:(curLvl===st.lvl?'OK':'ATT'), d:'niveau display '+curLvl+(curLvl===st.lvl?'':' (attendu '+st.lvl+')')};
   if(st.kind==='plateau'){
-    let win=p.acq, note='';
-    if(!win){
-      if(p.stableSince && now-p.stableSince>=10000){ win={since:p.stableSince, until:now}; note=' — fenêtre partielle'; }
-      else return {...base, vT:st.vT, v:'KO', d:'palier non acquis (jamais 10 s stables dans la bande)'};
-    }
-    const ss=p.samples.filter(x=>x.t>=win.since && x.t<=win.until);
-    const m=sMedians(ss); m.stableS=+((win.until-win.since)/1000).toFixed(0);
-    const r={...base, vT:st.vT, erg:st.erg||null, med:m};
+    const cumS=(p.cum||0)/1000, note = cumS>=p.params.stable ? '' : ' — cumul partiel';
+    if(cumS<10) return {...base, vT:st.vT, v:'KO', d:'palier non acquis ('+cumS.toFixed(0)+' s cumulées dans la bande, 10 s minimum)'};
+    const ss=p.samples.filter(x=>x.c);
+    const m=sMedians(ss); m.stableS=+cumS.toFixed(0);
+    const r={...base, vT:st.vT, erg:st.erg||null, res:st.res||null, med:m};
     let d='v '+m.spd+' km/h · cad≈'+m.cadEst+' rpm · couple '+m.torque+' · cur '+m.cur+' · roue '+(m.pmeca??'–')+' W'
       +(m.pbat!=null?' · batt '+m.pbat.toFixed(0)+' W ('+m.vbat.toFixed(1)+' V / '+m.ibat.toFixed(1)+' A)':'')
       +' · '+m.stableS+' s'+note;
     if(m.pmeca==null || m.pmeca===0) return {...r, v:'ATT', d:d+' — pmeca absent (trainer ?)'};
-    if(ss.some(x=>x.lvl!==st.lvl)) return {...r, v:'ATT', d:d+' — niveau changé pendant la fenêtre'};
+    if(p.bmsAtStart && m.pbat==null) return {...r, v:'ATT', d:d+' — pbat absent (BMS décroché ?)'};
     if(ss.some(x=>x.err)) return {...r, v:'ATT', d:d+' — erreur moteur présente'};
     if(note) return {...r, v:'ATT', d};
     return {...r, v:'OK', d};
@@ -2611,29 +2665,37 @@ function sStepResult(p, st){
 function nextStepS(){
   const p=proto; if(!p) return;
   if(p.idx>=0) p.results.push(sStepResult(p, p.steps[p.idx]));
-  p.idx++; p.samples=[]; p.stableSince=null; p.lastIn=0; p.acq=null; p.t0=Date.now(); p.state='running';
+  p.idx++; p.samples=[]; p.inSince=null; p.cum=0; p.lastT=null; p.t0=Date.now(); p.state='running';
   if(p.idx>=p.steps.length) return endProtoS(false);
   const st=p.steps[p.idx]; p.curId=st.id;
-  $('pTitle').textContent=st.id+' — '+st.title+(st.kind==='plateau'?'  ('+p.params.stable+' s stables, '+p.params.max+' s max)':'');
+  $('pTitle').textContent=st.id+' — '+st.title+(st.kind==='plateau'?'  ('+p.params.stable+' s cumulées dans la bande, '+p.params.max+' s max)':'');
   $('pInstr').innerHTML=st.instr;
   $('pWait').hidden=true; $('pPrompt').hidden=true;
   if(st.kind==='plateau') sApplyTrainer(st);   // certains trainers oublient la consigne après un arrêt de roue ; ERG par étape en étalonnage
 }
 
+/* Un échantillon COMPTE s'il est dans la bande au bon niveau, dans la bande depuis ≥ S_DEBOUNCE
+   (pas une simple traversée) et après S_SETTLE de palier. Fonction PURE (état avant mise à jour) :
+   appelée aussi par la ligne JSONL (stb), qui est écrite avant protoSampleS. */
+function sInBand(p, st, d){ return st && st.kind==='plateau' && Math.abs(d.spdX10/10-st.vT)<=p.params.band && curLvl===st.lvl; }
+function sCounted(p, d, now){
+  const st=p.steps[p.idx];
+  return sInBand(p, st, d) && p.inSince!=null && now-p.inSince>=S_DEBOUNCE && now-p.t0>=S_SETTLE;
+}
 function protoSampleS(d,now,st){
-  const p=proto;
-  p.samples.push({t:now, lvl:curLvl, pow:curPower, pmeca:pmeca, ...d, ...sBmsFields(now)});
+  const p=proto, c=sCounted(p, d, now);
+  p.samples.push({t:now, lvl:curLvl, pow:curPower, pmeca:pmeca, ...d, ...sBmsFields(now), c:c?1:0});
   if(st.kind!=='plateau') return;
-  const inBand = Math.abs(d.spdX10/10-st.vT)<=p.params.band && curLvl===st.lvl;
-  if(inBand){ p.lastIn=now; if(!p.stableSince) p.stableSince=now; }
-  else if(p.stableSince && now-p.lastIn>2000) p.stableSince=null;   // > 2 s hors bande : chrono à zéro
+  if(sInBand(p, st, d)){ if(p.inSince==null) p.inSince=now; } else p.inSince=null;
+  if(c && p.lastT!=null) p.cum += Math.min(now-p.lastT, 500);   // trous de télémétrie plafonnés
+  p.lastT=now;
 }
 
 function protoTickS(){
   const p=proto; if(!p) return; const st=p.steps[p.idx]; if(!st) return;
   const now=Date.now();
   const stalled = lastPkt && (now-lastPkt>3000);
-  if(stalled){ p.t0+=250; p.stableSince=null; $('pWait').hidden=false;
+  if(stalled){ p.t0+=250; p.inSince=null; $('pWait').hidden=false;
     $('pWait').textContent='⚠ Télémétrie interrompue — reconnectez le SW102 (bouton en haut), le chrono est en pause.'; }
   else $('pWait').hidden=true;
   const el=(now-p.t0)/1000, pr=$('pPrompt'); pr.hidden=false; pr.style.color='#fff';
@@ -2646,13 +2708,14 @@ function protoTickS(){
     $('pBarStep').style.width='0%';
     if(ok && el>=3){ beep(1); return nextStepS(); }
   } else if(st.kind==='plateau'){
-    const spd=lastSpdX10/10, dev=Math.abs(spd-st.vT), stab=p.stableSince?(now-p.stableSince)/1000:0;
-    pr.textContent = spd.toFixed(1)+' km/h  →  '+st.vT+'   ·   stable '+Math.floor(stab)+' / '+p.params.stable+' s';
+    const spd=lastSpdX10/10, dev=Math.abs(spd-st.vT), cum=p.cum/1000;
+    const settling = now-p.t0<S_SETTLE;
+    pr.textContent = spd.toFixed(1)+' km/h  →  '+st.vT+'   ·   '+(settling?'établissement…':'acquis '+Math.floor(cum)+' / '+p.params.stable+' s');
     if(curLvl!==st.lvl) pr.textContent='NIVEAU '+st.lvl+' ATTENDU (display '+curLvl+')  ·  '+pr.textContent;
     pr.style.background = curLvl!==st.lvl ? '#7a1f1c' : dev<=p.params.band ? '#1e6b3f' : dev<=p.params.band*2 ? '#7a5c12' : '#7a1f1c';
     $('pStepLeft').textContent=fmtT(p.params.max-el)+' max';
-    $('pBarStep').style.width=Math.min(100,stab/p.params.stable*100)+'%';
-    if(p.stableSince && stab>=p.params.stable){ p.acq={since:p.stableSince, until:now}; beep(2); return nextStepS(); }
+    $('pBarStep').style.width=Math.min(100,cum/p.params.stable*100)+'%';
+    if(cum>=p.params.stable){ beep(2); return nextStepS(); }
     if(el>=p.params.max){ beep(3); return nextStepS(); }
   } else {   // sweep : 2 passages de 45 s — 35 s de montée 20→26 km/h puis 10 s relâchés
     const ph=el%45, pass=Math.min(2,Math.floor(el/45)+1), target = ph<35 ? 20+ph/35*6 : null;
@@ -2666,13 +2729,13 @@ function protoTickS(){
   // ligne de vie : cadence estimée, couple brut, courant, roue, batterie BMS
   const cad=$('pCad'); cad.hidden=false; cad.style.background='#2a3340'; cad.style.color='var(--tx)';
   cad.textContent='cad≈'+cadEst(lastSpdX10).toFixed(0)+' rpm · couple '+lastTorque+' · cur '+lastCur
-    +(pmeca!=null?' · roue '+pmeca+' W':' · roue –')+(bms&&now-bms.t<3000?' · batt '+bms.p.toFixed(0)+' W':'');
+    +(pmeca!=null?' · roue '+pmeca+' W':' · roue –')+(bms&&now-bms.t<3000?' · batt '+bms.p.toFixed(0)+' W':p.bmsAtStart?' · ⚠ BMS MUET':'');
   const done=p.results.filter(r=>r.kind==='plateau').length, tot=p.steps.filter(x=>x.kind==='plateau').length;
   $('pTotLeft').textContent=done+' / '+tot+' paliers';
   $('pBarTot').style.width=Math.min(100,p.idx/p.steps.length*100)+'%';
   const t=p.trainer;
   $('pRes').hidden=false;
-  $('pRes').textContent=(st.erg?'ERG '+st.erg+' W (étalonnage)':t.mode==='res'?'résistance '+t.val+' %':t.mode==='grade'?'pente '+t.val+' %':'ERG '+t.val+' W')
+  $('pRes').textContent=(st.erg?'ERG '+st.erg+' W (étalonnage)':st.res?'résistance '+st.res+' % (étalonnage)':t.mode==='res'?'résistance '+t.val+' %':t.mode==='grade'?'pente '+t.val+' %':'ERG '+t.val+' W')
     +(t.ctrl?'':' (manuel)')+' · street '+(curStreet?'ON':'OFF')+' · '+p.params.chainring+'/'+p.params.cog;
 }
 
@@ -2682,13 +2745,15 @@ function endProtoS(aborted){
   $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
   $('btnProtoRedo').hidden=true; $('pCad').hidden=true;
   if(ftmsCtrl) trainerResistancePct(20);   // relâcher la charge en fin de run
-  const extra={phase:'S', lvl:p.lvl, speeds:p.speeds, band:p.params.band, stableS:p.params.stable,
+  // run interrompu : le palier en cours est gardé s'il a déjà ≥ 10 s cumulées
+  const cst=p.steps[p.idx]; if(aborted && cst && cst.kind==='plateau' && p.cum>=10000) p.results.push(sStepResult(p, cst));
+  const extra={phase:'S', lvl:p.lvl, seance:!!p.seance, speeds:p.speeds, band:p.params.band, stableS:p.params.stable, acq:'cumul-v4',
     gear:{chainring:p.params.chainring, cog:p.params.cog, circ_mm:p.params.circ}, trainer:p.trainer,
     street:curStreet, mode:curMode, bms:!!bmsDev, results:p.results, aborted:!!aborted};
-  archiveLog('banc', 'protoS-L'+p.lvl+(p.calib?'-calib':''), extra);
+  archiveLog('banc', 'protoS-'+(p.seance?'seance':'L'+p.lvl+(p.calib?'-calib':'')), extra);
   $('protoRun').hidden=true; $('protoDone').hidden=false;
   const pl=p.results.filter(r=>r.kind==='plateau');
-  $('pDoneTitle').textContent=(aborted?'⚠ Run interrompu — ':'')+'Phase S '+(p.calib?'étalonnage L0':'niveau '+p.lvl)+' : '
+  $('pDoneTitle').textContent=(aborted?'⚠ Run interrompu — ':'')+'Phase S '+(p.calib?'étalonnage L0':p.seance?'séance':'niveau '+p.lvl)+' : '
     +pl.filter(r=>r.v==='OK').length+' / '+pl.length+' paliers acquis'
     +(isStock()?' (STOCK'+(p.trainer.ctrl?'':', charge manuelle')+')':' (OSF)');
   $('pVerdict').innerHTML='<tr><th>Palier</th><th>État</th><th>v km/h</th><th>cad≈</th><th>couple</th><th>cur</th><th>roue W</th><th>batt W</th><th>stable</th><th>Détail</th></tr>'
@@ -3397,7 +3462,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-09-21';
+const DASH_VERSION = '2026-09-24';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
