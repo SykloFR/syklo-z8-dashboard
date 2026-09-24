@@ -43,13 +43,18 @@ def med(a):
 
 
 def cad_est(spd_kmh, gear):
-    circ = gear.get('circ_mm', 2050) / 1000.0
+    circ = gear.get('circ_mm', 2300) / 1000.0
     return spd_kmh * 1000 / 60 / circ * gear.get('cog', 14) / gear.get('chainring', 44)
+
+
+CIRC_OVERRIDE = None   # --circ : circonférence RÉGLÉE AU DISPLAY si celle du fichier est fausse
 
 
 def plateaus_from_lines(rows, meta):
     """Médianes par palier sur les lignes stb=1 ; repli sur meta.results."""
-    gear = (meta or {}).get('gear') or {'chainring': 44, 'cog': 14, 'circ_mm': 2050}
+    gear = dict((meta or {}).get('gear') or {'chainring': 44, 'cog': 14, 'circ_mm': 2300})
+    if CIRC_OVERRIDE:
+        gear['circ_mm'] = CIRC_OVERRIDE
     out = {}
     by = {}
     for r in rows:
@@ -103,7 +108,12 @@ def main(argv):
     ap.add_argument('--id', help='ne garder que ce moteur (meta.id)')
     ap.add_argument('--csv', help='écrire aussi la table niveau × vitesse en CSV')
     ap.add_argument('--eta', type=float, default=ETA, help='rendement batterie→roue attendu (info)')
+    ap.add_argument('--circ', type=float, help='circonférence (mm) RÉGLÉE AU DISPLAY, remplace celle des fichiers '
+                    '(les runs du 2026-09-24 matin portent 2050 alors que le display du banc est à 2300). '
+                    'Ne change ni les gains ni pbat, seulement les N·m et les rpm')
     a = ap.parse_args(argv)
+    global CIRC_OVERRIDE
+    CIRC_OVERRIDE = a.circ
     want_id, eta, opts = a.id, a.eta, {'--csv': a.csv}
     files = []
     for a in a.paths:
