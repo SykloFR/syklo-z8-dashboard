@@ -2,7 +2,10 @@
    cycliste simules, temps accelere. Verifie l'enchainement, l'acquisition CUMULEE (le
    cycliste sort de la bande regulierement), la reconnexion BMS et produit un JSONL que
    tools/protoS-report.py doit depouiller (etalonnage + loi retrouves).
-   Usage : node tools/dryrun-s.js index.html [sortie.jsonl] [seance|dyn]
+   Usage : node tools/dryrun-s.js index.html [sortie.jsonl] [seance|dyn|loi]
+   Loi simulée NON linéaire (comme le stock : gain plus faible à forte puissance pédale) :
+   P_assist = 3,25 × Gear_assist × 40 × (P_cycliste/40)^0,75, plafonnée à Gear_current × 23 A ;
+   le rapport doit retrouver α ≈ 0,75 et la superposition des niveaux une fois divisés par Gear_assist.
    Mode dyn : departs arretes + reprises L1..L5 + coupure en escalier L2 ; moteur simule avec
    coupure street a 26,5 km/h et pic de reengagement (comme vu au banc le 2026-09-24). */
 const MODE = process.argv[4] || 'seance';
@@ -40,24 +43,29 @@ vm.runInContext(script, sandbox, {filename:'dashboard.js'});
 const ctx = e => vm.runInContext(e, sandbox);
 
 // ---- banc simule ---------------------------------------------------------
-const G = [0, 0.5, 0.9, 1.4, 2.2, 3.2];          // loi simulee : P_assist = G[lvl] x P_cycliste
+const D = [0, 0.4, 0.55, 0.7, 0.85, 1.4], GC = [0, 0.3, 0.5, 0.6, 0.7, 1.0], ALPHA = 0.75;   // V3.6.5 48 V
+function assistOf(P, l){ if(l < 1 || P <= 0) return 0; return Math.min(3.25*D[l]*40*Math.pow(P/40, ALPHA), GC[l]*23*50*0.8); }
+function eqRider(pm, l){ let lo = 0, hi = Math.max(pm, 1); for(let i = 0; i < 40; i++){ const m = (lo+hi)/2; if(m + assistOf(m, l) > pm) hi = m; else lo = m; } return lo; }
+const G = [0, 1.3, 1.8, 2.3, 2.8, 4.5];          // ordre de grandeur (depart / reprises)
 const OFF = 91, KADC = 2.2;                       // torque_ADC = OFF + KADC x T_Nm (a retrouver)
-const TR = { res:100, erg:null };                 // consigne trainer recue en FTMS
+const TR = { res:100, erg:null, grade:null };     // consigne trainer recue en FTMS
 sandbox.__ftms = { writeValue: async f => { f=[...f];
-  if(f[0]===0x04){ TR.res=f[1]; TR.erg=null; } else if(f[0]===0x05){ TR.erg=f[1]|(f[2]<<8); } } };
+  if(f[0]===0x04){ TR.res=f[1]; TR.erg=null; TR.grade=null; } else if(f[0]===0x05){ TR.erg=f[1]|(f[2]<<8); TR.grade=null; }
+  else if(f[0]===0x11){ TR.grade=((f[3]|(f[4]<<8))<<16>>16)/100; TR.erg=null; } } };
 ctx('ftmsCtrl = __ftms; trainerDev = {}; ftmsResRange = null;');
 let lvl = 0, seq = 0, vTarget = 0, spd = 0, noiseT = 0;
 const cad = v => v/3.6/2.30*60*14/44;
 let cutOn = false, surgeUntil = 0;
 function state(){
-  const pm = TR.erg!=null ? TR.erg : 11*(0.15+0.85*TR.res/100)*spd;
-  const prid = pm/(1+G[lvl]), w = cad(spd)*2*Math.PI/60;
+  const pm = TR.erg!=null ? TR.erg : TR.grade!=null ? spd*(3.5+1.7*TR.grade) : 11*(0.15+0.85*TR.res/100)*spd;
+  const prid = eqRider(pm, lvl), w = cad(spd)*2*Math.PI/60;
   const ph = ctx('proto') ? ctx('proto').sph : null;
-  const extraT = ph==='go' ? 25 : ph==='push' ? 8 : 0;                 // effort volontaire (N.m)
+  const extraT = ph==='go' ? 25 : ph==='push' ? 5 : 0;                  // effort volontaire (N.m)
   const T = (w>0 ? prid/w : 0) + extraT;
-  if(spd>26.5 && !cutOn) cutOn = true;                                  // coupure street franche
-  if(cutOn && spd<25.5){ cutOn = false; surgeUntil = NOW+800; }         // reengagement avec pic
-  let pas = spd<0.5 && ph!=='go' ? 0 : G[lvl]*T*Math.max(w,1.5);
+  const street = ctx('curStreet') === 1;
+  if(street && spd>26.5 && !cutOn) cutOn = true;                        // coupure street franche
+  if(cutOn && (spd<25.5 || !street)){ cutOn = false; surgeUntil = NOW+800; }   // reengagement avec pic
+  let pas = spd<0.5 && ph!=='go' ? 0 : assistOf(T*Math.max(w,1.5), lvl);
   if(cutOn) pas = 0; else if(NOW<surgeUntil) pas *= 2.2;
   return { pm, prid, pas, T, torque: Math.round(OFF + KADC*T + (Math.random()-0.5)*6), curPh: Math.round(pas/48*1.45/0.2), pbat: pas/0.75 };
 }
@@ -68,11 +76,12 @@ function push04(){
   dv.setUint16(11,s.curPh,true); dv.setUint16(13,500,true); dv.setUint16(17,Math.round(spd*10),true);
   dv.setUint8(19,0x12);                            // src : stock (2), preset Z8 48V
   ctx('onNotify')({target:{value:dv}});
-  ctx('pmeca = '+Math.round(s.pm));
+  ctx('pmeca = '+Math.round(s.pm)+'; trSpd = '+(spd*0.917).toFixed(2)+'; trT = '+NOW);
   if(BMS_ON) ctx(`bms = {v:50.2, i:${(s.pbat/50.2).toFixed(2)}, p:${s.pbat.toFixed(1)}, soc:68, t:${NOW}}`);
 }
 function push01(){ const dv=new DataView(new ArrayBuffer(19)); dv.setUint8(0,0x01); dv.setUint8(16,1+1); dv.setUint8(17,lvl+1); dv.setUint8(18,25+1); ctx('onNotify')({target:{value:dv}}); }
-function push02(){ const dv=new DataView(new ArrayBuffer(12)); dv.setUint8(0,0x02); dv.setUint8(9,1); dv.setUint8(11,((1<<4)|(1<<3))+1); ctx('onNotify')({target:{value:dv}}); }
+let STREET = MODE==='seance' ? 1 : 0;              // runs dynamiques / loi : debrides
+function push02(){ const dv=new DataView(new ArrayBuffer(12)); dv.setUint8(0,0x02); dv.setUint8(9,1); dv.setUint8(11,((STREET<<4)|(1<<3))+1); ctx('onNotify')({target:{value:dv}}); }
 let BMS_ON = true;
 
 // cycliste : suit la consigne avec une derive lente et des sorties de bande (~1 s sur 6)
@@ -81,7 +90,7 @@ function human(){
   const st = p.steps[p.idx]; if(!st) return;
   if(st.kind==='level'){ if(NOW % 4000 === 0) lvl = st.lvl; vTarget = 12; return; }   // change de niveau apres une pause
   if(st.kind==='plateau') vTarget = st.vT;
-  if(st.kind==='sweep'){ const el=(NOW-p.t0)/1000, i=Math.floor(el/5), S=[22,23,24,25,26,27]; vTarget = i<S.length ? S[i] : 0; }
+  if(st.kind==='sweep'){ STREET = 1; const el=(NOW-p.t0)/1000, i=Math.floor(el/5), S=[22,23,24,25,26,27]; vTarget = i<S.length ? S[i] : 0; }
   if(st.kind==='launch') vTarget = p.sph==='stop' ? 0 : 20 + 4*G[lvl];
   if(st.kind==='push') vTarget = p.sph==='push' ? 16 + 1 + G[lvl] : 16;
 }
@@ -104,6 +113,7 @@ const T0 = NOW;
 (async () => {
   ctx("bmsDev = {name:'SIM'}");
   await advance(3000);
+  ctx("$('sLoiLvls').value='1,2,3,4,5'; $('sLoiLoads').value='r70,r100'; $('sLoiSpeeds').value='20,28,36';");
   ctx("$('sMode').value='"+MODE+"'; $('sSpeeds').value='20,14'; $('sErgs').value='40,70,100'; $('sCalSpeeds').value='20'; $('sChainring').value='44'; $('sCog').value='14'; $('sCirc').value='2300'; $('sCut').checked=true;");
   ctx('startProtoS()');
   let guard = 0;
@@ -130,5 +140,5 @@ const T0 = NOW;
     fs.writeFileSync(process.argv[3], f.text);
     console.log('ecrit :', process.argv[3], '('+f.name+')');
   }
-  console.log('loi simulee : gains', G.slice(1).join(' / '), '— etalonnage ADC =', OFF, '+', KADC, 'x T');
+  console.log('loi simulee : P_assist = 3,25 x Gear_assist x 40 x (P/40)^'+ALPHA+', plafond Gear_current x 23 A — etalonnage ADC =', OFF, '+', KADC, 'x T');
 })();

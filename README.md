@@ -348,15 +348,39 @@ servent à refaire un morceau. Rodage à blanc : `node tools/dryrun-s.js index.h
 cad/v = 2,30 rpm par km/h en 44/14). Les runs du 2026-09-24 matin portent 2 050 : dépouiller avec
 `--circ 2300`. Une erreur de circonférence fausse les N·m et les rpm, **pas** les gains ni `pbat`.
 
+**Mode loi : charge × vitesse** (2026-09-24 soir). Il sert à extraire la loi du stock sur toute
+la plage de puissance pédale. Au labo, le même firmware passait à 100 W pédale et échouait à
+150 W ; au banc maison, la loi est linéaire entre 20 et 80 W. À l'équilibre, ta puissance pédale
+est imposée par la charge, la vitesse et la loi : on balaie donc les **charges** (`r40,r100,g5` =
+résistance 40 %, 100 %, pente 5 % ; le D100 accepte la pente, vérifié en FTMS) aux **vitesses**
+20 et 30 km/h, sur les **niveaux** choisis (`1,2,3` puis `4,5`). Le run commence par une ancre L0
+(résistance 70 % à 20 km/h, contrôle de dérive de l'étalonnage fait en séance). Il se fait **en
+débridé** (street OFF) pour dépasser 25 km/h ; confirmation demandée si street est ON. Fichier
+`…_banc-protoS-loi.jsonl`. Le dépouillement `protoS-report.py` (avec les séances, qui portent
+l'étalonnage) produit une section **LOI** :
+- par niveau, un ajustement linéaire (a·P + b) et un ajustement en puissance (c·P^α) ;
+- une loi **normalisée par Gear assist** (les niveaux se superposent-ils ?) ;
+- une extrapolation au point de certification (150 W pédale), comparée au labo ;
+- un contrôle de dépendance à la cadence ;
+- le plafond Gear_current × 23 A, signalé quand il est atteint.
+Paramètres du modèle : `--gear-assist`, `--gear-current`, `--imax` (défaut : prod V3.6.5 48 V).
+
+**Modèle Tongsheng identifié** (prod V3.6.5 48 V, tableau « Gear parameters » lignes 110-115) :
+- **Gear_current × 23 A = plafond de courant batterie du niveau.** Il est atteint en ~1 s au
+  départ arrêté : 6,4/11,9/14,2/16,4/23,3 A mesurés, pour 6,9/11,5/13,8/16,1/23 A.
+- **Gear assist = gain proportionnel** : P_assist(roue) = 3,28 × Gear assist × P_pédale entre
+  20 et 80 W (α = 1,00, niveaux superposés à ±3 %).
+- Le display affiche le courant **phase** : les « 23 A dès L3 » lus au display valent 14 A batterie.
+
 **Mode dynamique** (ajouté le 2026-09-24 après la séance 2 : départ arrêté en L5 = 40 A phase /
 ~900 W batterie en 1 s, 0 → 39 km/h ; coupure street franche vers 26-27 km/h avec pic au
 réengagement ; micro-coupures de 0,4-0,7 s suivies d'une surintensité). À chaque niveau 1→5 :
 **départ arrêté** (arrêt ≥ 2 s, bip, effort franc et constant jusqu'à 20 km/h, 3 s d'observation
 du dépassement) puis **2 reprises** à 16 km/h (bip : « poussez plus fort » 3 s, 2ᵉ bip : effort
 normal 5 s). L'effort n'étant pas imposé, une **cible de couple** s'affiche (départ : repos + 60 ≈ 29 Nm ;
-reprise : base + 20 ≈ +10 Nm), verte à ±10 : même effort à tous les niveaux et d'un firmware à l'autre. Marqueur `sph` dans le JSONL (`stop/go/after/settle/push/rel/stair`). Option coupure
+reprise : base + **10** ≈ +5 Nm, pour rester SOUS le plafond Gear_current, sinon k mesure le plafond), verte à ±6 : même effort à tous les niveaux et d'un firmware à l'autre. Marqueur `sph` dans le JSONL (`stop/go/after/settle/push/rel/stair`). Option coupure
 street **en escalier 22 → 27 km/h au niveau 2** (au niveau 5 le gain ~4,5 empêche de monter palier
-par palier). Fichier `…_banc-protoS-dyn.jsonl`. Dépouillement : `python tools/protoS-dyn.py
+par palier). Run **débridé** (street OFF) : plage complète de puissance ; l'étape coupure attend que le street soit remis ON. Arrêt détecté sur le **volant du trainer** (le display affiche 0 dès ~6 km/h) ; verdicts calculés sur la vitesse trainer ramenée à l'échelle du display (× 1/0,917, rapport réappris en continu). Fichier `…_banc-protoS-dyn.jsonl`. Dépouillement : `python tools/protoS-dyn.py
 <fichiers>` : départs (retard du courant, 0 → 15 km/h, pics cur / batt / roue, v max), accélérations
 14 → 20 km/h des séances, reprises (k = Δcur / Δcouple, la « nervosité »), coupures et réengagements
 jugés **en poussant** (couple ≥ repos + 8). La **vitesse du trainer** (`tspd`, FTMS ~6 Hz, le D100

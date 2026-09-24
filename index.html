@@ -205,11 +205,13 @@
         <option value="seance">séance : étalonnage L0 → L1…L5 → L0 (~12 min)</option>
         <option value="grid">un niveau (grille, charge du panneau)</option>
         <option value="calib">étalonnage L0 seul</option>
-        <option value="dyn">dynamique : départs arrêtés + reprises L1…L5 (~8 min)</option></select></label>
+        <option value="dyn">dynamique : départs arrêtés + reprises L1…L5 (~8 min, débridé)</option>
+        <option value="loi">loi : charge × vitesse par niveau (~10 min, débridé)</option></select></label>
       <label class="sp">niveau <select id="sLvl"><option value="auto">courant (display)</option>
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
       <label class="sp" title="vitesses des paliers assistés (et du L0 de contrôle en fin de séance : la 1re)">paliers km/h <input id="sSpeeds" size="8" value="20,14"></label>
       <label class="sp" id="sErgLbl" title="étalonnage L0 : résistances trainer en % à vitesse fixe (stable, la charge suit la vitesse). Suffixe W = ERG (ex. 150W) — déconseillé à basse cadence (spirale)">charges L0 <input id="sErgs" size="10" value="40,70,100"> % à <input id="sCalSpeeds" size="4" value="20"> km/h</label>
+      <label class="sp" id="sLoiLbl" title="mode loi : niveaux, charges (r40 = résistance 40 %, g5 = pente 5 %, 150w = ERG) et vitesses — un palier par combinaison, débridé (street OFF) pour dépasser 25 km/h">loi : niv. <input id="sLoiLvls" size="5" value="1,2,3"> charges <input id="sLoiLoads" size="10" value="r70,r100"> à <input id="sLoiSpeeds" size="7" value="20,28,36"> km/h</label>
       <label class="sp">braquet <input id="sChainring" size="2" value="44"> / <input id="sCog" size="2" value="14"></label>
       <label class="sp" title="circonférence RÉGLÉE AU DISPLAY (pas celle du pneu) : convertit la vitesse affichée en cadence. Banc Syklo : 2300 (vérifié : cad/v = 2,30 rpm par km/h sous OSF)">circ. mm <input id="sCirc" size="4" value="2300"></label>
       <label class="sp" title="traversée de la coupure street en ESCALIER 22→27 km/h, au niveau 2 (au niveau 5 le gain est trop fort pour monter palier par palier)"><input type="checkbox" id="sCut"> + coupure (L2, escalier 22→27)</label>
@@ -252,7 +254,10 @@
       « étalonnage L0 seul » pour refaire un morceau. Mode <b>dynamique</b> (~8 min) : à chaque
       niveau un <b>départ arrêté</b> (effort franc jusqu'à 20 km/h) et 2 <b>reprises</b> à 16 km/h
       (« poussez plus fort » 3 s) → retard, pic de courant, pic batterie, Δv : la brutalité que la loi
-      statique ne montre pas (dépouillement <code>tools/protoS-dyn.py</code>). Option coupure street
+      statique ne montre pas (dépouillement <code>tools/protoS-dyn.py</code>). Mode <b>loi</b> (débridé) :
+      par niveau, charges résistance 40 % / 100 % / pente 5 % × 20 et 30 km/h → la loi P_assist =
+      f(P_pédale) jusqu'à ~150-200 W pédale, normalisée par Gear assist (section LOI de
+      <code>tools/protoS-report.py</code>). Option coupure street
       en <b>escalier 22→27 km/h au niveau 2</b>. Vitesse du trainer (<code>tspd</code>, ~6 Hz)
       enregistrée en plus de celle du display. Cadence estimée depuis la vitesse et le braquet
       (44/14 et <b>2 300 mm = circonférence réglée au display</b> → 14 km/h = 32 rpm, 20 km/h = 46 rpm). Street <b>ON</b> comme
@@ -818,6 +823,10 @@ function handle04(dv) {
   $('vErrBits').textContent = d.err ? (na ? (isRd45() ? 'code stock KZQWA56 · ≠ 0 pendant 3 s → moteur coupé, redémarrage refusé' : 'code stock Tongsheng (≠ bitfield OSF)') : errTxt(d.err)) : '';
   $('errTile').classList.toggle('bad', !!d.err);
   lastCad = d.cad;
+  if (trT && now-trT < 1500 && trSpd > 8 && d.spdX10 >= 120 && d.spdX10 <= 300) {
+    if (trPrevK && Math.abs(d.spdX10/10-trPrevK.d) < 0.4 && Math.abs(trSpd-trPrevK.t) < 0.4) trK += 0.02*(trSpd/(d.spdX10/10) - trK);
+    trPrevK = { d:d.spdX10/10, t:trSpd };
+  }
   lastSpdX10 = d.spdX10; lastVoltX10 = d.voltX10; lastTorque = d.torque; lastCur = d.cur;
   // cadence estimée depuis la vitesse et le braquet (phase S) : seule cadence disponible en stock,
   // et sous OSF un contrôle du braquet saisi (doit coller à `cad` à ±5 %)
@@ -1033,6 +1042,13 @@ let trainerDev = null;
    cessent → inutilisable pour chronométrer une accélération ou un départ. Enregistrées `tspd`
    (km/h) et `tcad` (rpm, si le trainer la diffuse) dans le JSONL. */
 let trSpd = null, trCad = null, trT = 0;
+/* Échelle trainer → display : le trainer compte avec SA roue (~2 110 mm), le display avec la
+   circonférence réglée (2 300) → tspd ≈ 0,917 × display en régime établi (run dyn du 2026-09-24).
+   Rapport réappris en continu, seulement quand les deux vitesses sont stables (le display est
+   faux en transitoire : 41,8 km/h affichés pour 5,9 réels au décollage, figé à l'arrêt). */
+let trK = 0.917, trPrevK = null;
+const vEq = () => (trT && Date.now()-trT < 1500 && trSpd != null) ? trSpd/trK : null;   // km/h, échelle display
+const vBest = () => vEq() ?? lastSpdX10/10;
 function onTrainerBike(e) {
   const dv = e.target.value; if (dv.byteLength < 4) return;
   const f = dv.getUint16(0, true); let o = 2;
@@ -2525,8 +2541,9 @@ $('btnProtoRedo').onclick=()=>{ const p=proto; if(!p) return;
    Mode « séance » : étalonnage L0 → L1…L5 → L0 de contrôle en UN run (~12 min pédalés) ;
    chaque étape « niveau » attend le display : c'est la pause de l'opérateur.
 --------------------------------------------------------------------------- */
-const S_KEY='protoS.v3';
-const S_DEF={mode:'seance', speeds:'20,14', ergs:'40,70,100', calSpeeds:'20', chainring:44, cog:14, circ:2300, band:1.5, stable:20, max:90, cut:false};
+const S_KEY='protoS.v5';
+const S_DEF={mode:'seance', speeds:'20,14', ergs:'40,70,100', calSpeeds:'20', chainring:44, cog:14, circ:2300, band:1.5, stable:20, max:90, cut:false,
+             loiLvls:'1,2,3', loiLoads:'r70,r100', loiSpeeds:'20,28,36'};
 /* DYNAMIQUE (2026-09-24, après la séance 2 : départ arrêté L5 = 40 A phase / ~900 W batterie en
    1 s, 0 → 39 km/h ; coupure franche vers 26-27 km/h avec pic au réengagement) — la loi statique
    (gain par niveau) ne dit rien de la BRUTALITÉ ressentie. Deux gestes courts par niveau :
@@ -2534,7 +2551,7 @@ const S_DEF={mode:'seance', speeds:'20,14', ergs:'40,70,100', calSpeeds:'20', ch
    · reprises : stabilisé à pushV, « poussez plus fort » pushS s puis effort normal relS s, ×pushes.
    Marqueur `sph` dans le JSONL (stop / go / after / settle / push / rel / stair). */
 const S_DYN={launchV:20, launchMax:15, after:3, pushV:16, pushes:2, pushS:3, relS:5, settleS:3, pushMax:60,
-               launchTq:60, pushTq:20, tqTol:10};   // cibles d'effort affichées (counts de couple au-dessus du repos / de la base)
+               launchTq:60, pushTq:10, tqTol:6};   // reprise +10 (~5 Nm) : rester SOUS le plafond Gear_current, sinon k mesure le plafond   // cibles d'effort affichées (counts de couple au-dessus du repos / de la base)
 /* L'effort humain n'est pas imposé : pour comparer les niveaux (et stock ↔ OSF) on AFFICHE une cible
    de couple — départ : repos + launchTq (~29 Nm), reprise : base + pushTq (~10 Nm) — verte à ±tqTol. */
 function sTqGauge(cur, target){ const d=cur-target; return 'couple '+cur+' / visé '+target+(Math.abs(d)<=S_DYN.tqTol?' ✓':d<0?' ↑':' ↓'); }
@@ -2546,14 +2563,17 @@ function sLoad(){
   const p={...S_DEF,...o};
   $('sMode').value=p.mode||'seance'; $('sSpeeds').value=p.speeds; $('sErgs').value=p.ergs; $('sCalSpeeds').value=p.calSpeeds;
   $('sChainring').value=p.chainring; $('sCog').value=p.cog; $('sCirc').value=p.circ; $('sCut').checked=!!p.cut;
+  $('sLoiLvls').value=p.loiLvls; $('sLoiLoads').value=p.loiLoads; $('sLoiSpeeds').value=p.loiSpeeds;
   sGear=sGearRead(); sModeUi();
 }
-function sModeUi(){ const m=$('sMode').value; $('sErgLbl').style.opacity=(m==='grid'||m==='dyn')?'.45':'1'; $('sLvl').disabled=m!=='grid'; $('sCut').disabled=m==='calib'; }
+function sModeUi(){ const m=$('sMode').value; $('sErgLbl').style.opacity=(m==='seance'||m==='calib')?'1':'.45';
+  $('sLoiLbl').style.opacity=m==='loi'?'1':'.45'; $('sLvl').disabled=m!=='grid'; $('sCut').disabled=(m==='calib'||m==='loi'); }
 $('sMode').onchange=sModeUi;
 function sParams(){
   const g=sGearRead();
   const p={ mode:$('sMode').value, speeds:$('sSpeeds').value, ergs:$('sErgs').value, calSpeeds:$('sCalSpeeds').value,
-            ...g, band:S_DEF.band, stable:S_DEF.stable, max:S_DEF.max, cut:$('sCut').checked };
+            ...g, band:S_DEF.band, stable:S_DEF.stable, max:S_DEF.max, cut:$('sCut').checked,
+            loiLvls:$('sLoiLvls').value, loiLoads:$('sLoiLoads').value, loiSpeeds:$('sLoiSpeeds').value };
   try{ localStorage.setItem(S_KEY, JSON.stringify(p)); }catch(_){}
   sGear=g; return p;
 }
@@ -2581,18 +2601,21 @@ const med=a=>{ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.l
 const numList=t=>String(t).split(/[,; ]+/).map(Number).filter(v=>v>0);
 /* Charges d'étalonnage : « 40,70,100 » = résistances % ; suffixe W = ERG (« 150W »). */
 const sCharges=t=>String(t).split(/[,; ]+/).map(s=>s.trim()).filter(Boolean)
-  .map(s=>/w$/i.test(s)?{erg:+s.slice(0,-1)}:{res:+s}).filter(c=>(c.erg||c.res)>0);
+  .map(s=>/w$/i.test(s)?{erg:+s.slice(0,-1)}:/^g/i.test(s)?{grade:+s.slice(1)}:{res:+s.replace(/^r/i,'')})
+  .filter(c=>(c.erg||c.res||c.grade)>0);
+const sChargeTok=c=>c.erg?'-e'+c.erg:c.grade?'-g'+c.grade:'-r'+c.res;
+const sChargeLab=c=>c.erg?'ERG '+c.erg+' W':c.grade?'pente '+c.grade+' %':'résistance '+c.res+' %';
 function sLevelStep(lvl, pause){
   return {id:'S-L'+lvl+'-lvl', kind:'level', lvl, dur:0, title:'Niveau '+lvl+' au display',
     instr:(pause?'<b>Pause possible</b> : soufflez, puis ':'')+'mettez le display au niveau <b>'+lvl+'</b> (▲/▼) et pédalez tranquillement — la suite part toute seule 3 s après que le display remonte le niveau.'};
 }
 function sPlateau(lvl, v, p, c){
-  const lab = c ? (c.erg ? 'ERG '+c.erg+' W' : 'résistance '+c.res+' %') : null;
-  return {id:'S-L'+lvl+(c?(c.erg?'-e'+c.erg:'-r'+c.res):'')+'-v'+v, kind:'plateau', lvl, vT:v,
-    erg:c&&c.erg||null, res:c&&c.res||null, dur:p.stable,
-    title:(c?'Étalonnage L0 — '+lab+' à ':'Niveau '+lvl+' — palier ')+v+' km/h',
+  const lab = c ? sChargeLab(c) : null;
+  return {id:'S-L'+lvl+(c?sChargeTok(c):'')+'-v'+v, kind:'plateau', lvl, vT:v,
+    erg:c&&c.erg||null, res:c&&c.res||null, grade:c&&c.grade||null, dur:p.stable,
+    title:(c?(lvl===0?'Étalonnage L0 — ':'Niveau '+lvl+' — ')+lab+' à ':'Niveau '+lvl+' — palier ')+v+' km/h',
     instr:(c?(c.erg?'Le trainer impose <b>'+c.erg+' W</b> (ERG : restez dans le HAUT de la bande, si la cadence baisse il durcit). ':'Le trainer passe en <b>'+lab+'</b>. ')
-            +'Sans assistance, la puissance roue est 100 % la vôtre. ':'')
+            +(lvl===0?'Sans assistance, la puissance roue est 100 % la vôtre. ':''):'')
       +'Tenez <b>'+v+' km/h</b> (±'+p.band+' km/h ≈ '+cadEst(v*10).toFixed(0)+' rpm) : seul le temps DANS la bande compte, il se cumule ('+p.stable+' s), sortir ne remet rien à zéro. Assis, régulier ; ne touchez pas au niveau.'
       +(c?' Trop dur ? « Étape suivante ».':'')};
 }
@@ -2609,7 +2632,7 @@ function sLaunchStep(lvl){
 }
 function sPushStep(lvl){
   return {id:'S-L'+lvl+'-rep', kind:'push', lvl, dur:S_DYN.pushMax, title:'Niveau '+lvl+' — reprises',
-    instr:'Stabilisez-vous vers <b>'+S_DYN.pushV+' km/h</b>. Au bip : <b>poussez plus fort</b> '+S_DYN.pushS+' s jusqu’au <b>couple visé</b> affiché (+'+S_DYN.pushTq+' ≈ +10 Nm, vert = bon), au 2ᵉ bip : effort normal '+S_DYN.relS+' s. '+S_DYN.pushes+' fois.'};
+    instr:'Stabilisez-vous vers <b>'+S_DYN.pushV+' km/h</b>. Au bip : <b>poussez plus fort</b> '+S_DYN.pushS+' s jusqu’au <b>couple visé</b> affiché (+'+S_DYN.pushTq+' ≈ +5 Nm, un PETIT cran, vert = bon), au 2ᵉ bip : effort normal '+S_DYN.relS+' s. '+S_DYN.pushes+' fois.'};
 }
 function buildProtoS(lvl, p){
   const calPl=()=>{ const out=[]; for(const v of numList(p.calSpeeds)) for(const c of sCharges(p.ergs)) out.push(sPlateau(0, v, p, c)); return out; };
@@ -2623,6 +2646,19 @@ function buildProtoS(lvl, p){
     for(let l=1;l<=5;l++){ steps.push(sLevelStep(l, true)); for(const v of speeds) steps.push(sPlateau(l, v, p)); if(l===2 && p.cut) steps.push(sCutStep(2)); }
     steps.push(sLevelStep(0, true), sPlateau(0, speeds[0], p));
     return {steps, speeds};
+  }
+  if(p.mode==='loi'){
+    /* LOI : la puissance pédale d'équilibre est imposée par (charge, vitesse) et par la loi du
+       firmware → on balaie les charges à vitesse fixe (forme de la loi à cadence fixe) et deux
+       vitesses (dépendance à la cadence). Ancre L0 (résistance 70 % à 20 km/h) = contrôle de dérive
+       de l'étalonnage du couple (fait en séance). Débridé : au-delà de 25 km/h pour charger fort. */
+    const steps=[sLevelStep(0), sPlateau(0, 20, p, {res:70})];
+    const loads=sCharges(p.loiLoads), sp=numList(p.loiSpeeds);
+    for(const l of numList(p.loiLvls).filter(l=>l>=1&&l<=5)){
+      steps.push(sLevelStep(l, true));
+      for(const v of sp) for(const c of loads) steps.push(sPlateau(l, v, p, c));
+    }
+    return {steps, speeds:sp};
   }
   if(p.mode==='dyn'){
     const steps=[];
@@ -2639,6 +2675,7 @@ async function sApplyTrainer(st){
   const t=proto&&proto.trainer; if(!t||!ftmsCtrl) return;
   if(st && st.erg) return trainerTargetPowerW(st.erg);     // étalonnage : charge par étape
   if(st && st.res) return trainerResistancePct(st.res);
+  if(st && st.grade) return trainerGradePct(st.grade);
   if(t.mode==='res') await trainerResistancePct(t.val);
   else if(t.mode==='grade') await trainerGradePct(t.val);
   else await trainerTargetPowerW(t.val);
@@ -2648,13 +2685,13 @@ function startProtoS(){
   if(lastSeq===null){ alert('Connectez d’abord le SW102 (aucune télémétrie reçue).'); return; }
   if(bench){ alert('Désarmez le mode banc : la phase S tourne en assistance normale.'); return; }
   if(curLvl==null){ alert('Niveau d’assistance inconnu : attendez le paquet 0x01 (~2 s) et relancez.'); return; }
-  const mode=$('sMode').value, calib=mode==='calib', seance=mode==='seance', dyn=mode==='dyn';
-  const sel=$('sLvl').value, lvl = calib ? 0 : (seance||dyn) ? null : sel==='auto' ? curLvl : +sel;
-  if((calib||seance) && !ftmsCtrl){ alert('Étalonnage L0 : le contrôle FTMS du trainer est indispensable (charges imposées par palier). Connectez le home trainer.'); return; }
+  const mode=$('sMode').value, calib=mode==='calib', seance=mode==='seance', dyn=mode==='dyn', loi=mode==='loi';
+  const sel=$('sLvl').value, lvl = calib ? 0 : (seance||dyn||loi) ? null : sel==='auto' ? curLvl : +sel;
+  if((calib||seance||loi) && !ftmsCtrl){ alert('Étalonnage L0 : le contrôle FTMS du trainer est indispensable (charges imposées par palier). Connectez le home trainer.'); return; }
   if(!trainerDev && !confirm('Home trainer NON connecté : sans pmeca la phase S perd sa mesure pivot (puissance roue). Continuer quand même ?')) return;
   const trMode=calib?'calib':$('trMode').value, trVal=calib?null:+$('trVal').value;
-  if(!calib && trMode==='erg' && !confirm('Trainer en ERG : la charge ne croît pas avec la vitesse, les paliers assistés seront difficiles à tenir (la grille se fait en résistance fixe). Continuer en ERG ?')) return;
-  if(!calib && trMode==='res' && trVal!==100 && !confirm('Charge de la grille = résistance '+trVal+' % (panneau Home trainer) ; la campagne se fait à 100 %. Continuer à '+trVal+' % ?')) return;
+  if(!calib && !loi && trMode==='erg' && !confirm('Trainer en ERG : la charge ne croît pas avec la vitesse, les paliers assistés seront difficiles à tenir (la grille se fait en résistance fixe). Continuer en ERG ?')) return;
+  if(!calib && !loi && trMode==='res' && trVal!==100 && !confirm('Charge de la grille = résistance '+trVal+' % (panneau Home trainer) ; la campagne se fait à 100 %. Continuer à '+trVal+' % ?')) return;
   if(!calib && trainerDev && !ftmsCtrl && !confirm('Pas de contrôle FTMS : réglez la charge à la main sur le trainer et ne la changez plus de la campagne. Continuer ?')) return;
   if(lastVoltX10 && lastVoltX10<430 && !confirm('Pack < 43 V ('+(lastVoltX10/10).toFixed(1)+' V) : run noté « pack bas », les pics seront déformés. Continuer ?')) return;
   if(isStock() && !bmsDev && !confirm('Firmware STOCK sans BMS connecté : le JSONL n’aura AUCUNE puissance batterie fiable (cur = courant phase). Continuer sans pbat ?')) return;
@@ -2662,17 +2699,19 @@ function startProtoS(){
   const p=sParams();
   const {steps,speeds}=buildProtoS(lvl,p);
   if(steps.length<2){ alert('Liste de paliers vide.'); return; }
-  if(dyn && !confirm('Test DYNAMIQUE : départs arrêtés et reprises à chaque niveau. Au niveau 5 le départ monte à ~900 W batterie en 1 s (vu le 2026-09-24) : mains sur le cintre, rien dans la transmission. Continuer ?')) return;
+  if(dyn && !confirm('Test DYNAMIQUE : départs arrêtés et reprises à chaque niveau (débridé conseillé : street OFF). Au niveau 5 le départ monte à ~1 100 W batterie / 23 A en ~1 s (vu le 2026-09-24) : mains sur le cintre, rien dans la transmission. Continuer ?')) return;
+  if(loi && curStreet===1 && !confirm('Mode LOI en street ON : les paliers au-delà de 25 km/h seront coupés. Passez en débridé (street OFF) pour charger fort. Continuer quand même ?')) return;
+  if(loi && Math.max(...numList(p.loiSpeeds))>27 && !confirm('Paliers jusqu’à '+Math.max(...numList(p.loiSpeeds))+' km/h : vérifiez que la VITESSE MAX hors street du display est au-dessus (run du 2026-09-24 : coupures à ~30 km/h en débridé, assistance qui prend puis coupe). Continuer ?')) return;
   beep(1);   // le geste utilisateur débloque l’audio pour les bips suivants
   log=[]; recording=true;
   $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true;
   proto={phase:'S', steps, idx:-1, curId:null, state:'running', t0:Date.now(), samples:[], results:[], lvl, params:p, speeds,
-         trainer:{mode:trMode, val:trVal, ctrl:!!ftmsCtrl, ...(calib||seance?{calib:p.ergs, calSpeeds:numList(p.calSpeeds)}:{})}, calib, seance, dyn, sph:null, tqRest:null,
+         trainer:{mode:trMode, val:trVal, ctrl:!!ftmsCtrl, ...(calib||seance?{calib:p.ergs, calSpeeds:numList(p.calSpeeds)}:{}), ...(loi?{loads:p.loiLoads}:{})}, calib, seance, dyn, loi, sph:null, tqRest:null,
          bmsAtStart:!!bmsDev, inSince:null, cum:0, lastT:null, timer:setInterval(protoTick,250)};
   $('protoIdle').hidden=true; $('protoDone').hidden=true; $('protoRun').hidden=false;
-  $('pPhase').textContent='PHASE S — '+(calib?'étalonnage L0':seance?'séance L0 → L5 → L0':dyn?'dynamique L1 → L5':'niveau '+lvl+' × vitesses')+', pédalage ('+(isStock()?'STOCK':'OSF')+(bmsDev?', BMS':'')+')';
+  $('pPhase').textContent='PHASE S — '+(calib?'étalonnage L0':seance?'séance L0 → L5 → L0':dyn?'dynamique L1 → L5':loi?'loi charge × vitesse (L'+p.loiLvls+')':'niveau '+lvl+' × vitesses')+', pédalage ('+(isStock()?'STOCK':'OSF')+(bmsDev?', BMS':'')+')';
   $('btnProtoRedo').hidden=false;
-  if(!calib && !seance) sApplyTrainer();
+  if(!calib && !seance && !loi) sApplyTrainer();
   nextStepS();
 }
 
@@ -2709,12 +2748,14 @@ function sStepResult(p, st){
     /* départ arrêté : début d'effort = 1er couple ≥ repos+15 après le bip ; retard = 1er cur ≥ 10 ensuite */
     const G=S.filter(x=>x.sph==='go'||x.sph==='after'); if(!G.length) return {...base, v:'KO', d:'pas de départ enregistré'};
     const i0=G.findIndex(x=>x.torque>=rest+15); if(i0<0) return {...base, v:'KO', d:'aucun effort détecté après le bip'};
-    const t0=G[i0].t, iC=G.findIndex((x,i)=>i>=i0 && x.cur>=10), i15=G.findIndex((x,i)=>i>=i0 && x.spdX10>=150);
+    const V=x=>x.vt??x.spdX10/10;   // vitesse trainer (échelle display) si connue : le display est faux au décollage
+    const t0=G[i0].t, iC=G.findIndex((x,i)=>i>=i0 && x.cur>=10), i15=G.findIndex((x,i)=>i>=i0 && V(x)>=15);
     const win=G.slice(i0, i15>0?i15+1:G.length);
     const m={tqMed:med(win.map(x=>x.torque)), delayS:iC>=0?+((G[iC].t-t0)/1000).toFixed(1):null, t15S:i15>=0?+((G[i15].t-t0)/1000).toFixed(1):null,
-             curPk:mx(G.map(x=>x.cur||0)), pbatPk:mx(G.map(x=>x.pbat||0))||null, pmPk:mx(G.map(x=>x.pmeca||0))||null, vmax:mx(G.map(x=>x.spdX10||0))/10};
+             curPk:mx(G.map(x=>x.cur||0)), pbatPk:mx(G.map(x=>x.pbat||0))||null, ibatPk:mx(G.map(x=>x.ibat||0))||null,
+             pmPk:mx(G.map(x=>x.pmeca||0))||null, vmax:mx(G.map(V))};
     const d='effort '+fx(m.tqMed)+' (couple médian) · retard courant '+fx(m.delayS,1)+' s · 0→15 km/h '+fx(m.t15S,1)+' s · pic cur '+m.curPk
-      +' (≈ '+(m.curPk*0.2).toFixed(0)+' A phase) · pic batt '+fx(m.pbatPk)+' W · pic roue '+fx(m.pmPk)+' W · v max '+m.vmax.toFixed(1)+' km/h';
+      +' (≈ '+(m.curPk*0.2).toFixed(0)+' A phase) · pic batt '+fx(m.pbatPk)+' W / '+fx(m.ibatPk,1)+' A · pic roue '+fx(m.pmPk)+' W · v max '+m.vmax.toFixed(1)+' km/h';
     return {...base, med:m, v:(i15>=0?'OK':'ATT'), d:d+(i15>=0?'':' — 15 km/h non atteints')};
   }
   if(st.kind==='push'){
@@ -2724,8 +2765,10 @@ function sStepResult(p, st){
       if(S[i].sph!=='push' || S[i-1].sph==='push') continue;
       const tp=S[i].t, pre=S.filter(x=>x.t>=tp-1000 && x.t<tp), resp=S.filter(x=>x.t>=tp && x.t<=tp+(S_DYN.pushS+2)*1000);
       if(!pre.length || !resp.length) continue;
-      const q={tq0:med(pre.map(x=>x.torque)), cur0:med(pre.map(x=>x.cur)), v0:med(pre.map(x=>x.spdX10))/10, pb0:med(pre.map(x=>x.pbat).filter(v=>v!=null))};
-      q.dTq=mx(resp.map(x=>x.torque))-q.tq0; q.dCur=mx(resp.map(x=>x.cur))-q.cur0; q.dV=+(mx(resp.map(x=>x.spdX10))/10-q.v0).toFixed(1);
+      const V=x=>x.vt??x.spdX10/10;
+      const q={tq0:med(pre.map(x=>x.torque)), cur0:med(pre.map(x=>x.cur)), v0:med(pre.map(V)), pb0:med(pre.map(x=>x.pbat).filter(v=>v!=null))};
+      q.dTq=mx(resp.map(x=>x.torque))-q.tq0; q.dCur=mx(resp.map(x=>x.cur))-q.cur0; q.dV=+(mx(resp.map(V))-q.v0).toFixed(1);
+      q.ibPk=mx(resp.map(x=>x.ibat).filter(v=>v!=null));
       const pbs=resp.map(x=>x.pbat).filter(v=>v!=null); q.dPbat=(pbs.length&&q.pb0!=null)?Math.round(mx(pbs)-q.pb0):null;
       const iT=resp.findIndex(x=>x.torque>=q.tq0+5), iC=resp.findIndex((x,k)=>k>=Math.max(iT,0) && x.cur>=q.cur0+5);
       q.delayS=(iT>=0&&iC>=0)?+((resp[iC].t-resp[iT].t)/1000).toFixed(1):null;
@@ -2743,14 +2786,15 @@ function sStepResult(p, st){
      Coupure = cur ≥ 10 → ≤ 2 en poussant ; vitesse prise au max de la seconde précédente (l'affichage
      du display retarde) ; réengagement = cur ≤ 2 → ≥ 10, pic dans la seconde qui suit. */
   const P=S.filter(x=>x.sph==='stair');
-  const cb=med(P.filter(x=>x.spdX10>=215 && x.spdX10<=235 && x.torque>=rest+8).map(x=>x.cur));
+  const cb=med(P.filter(x=>{ const v=x.vt??x.spdX10/10; return v>=21.5 && v<=23.5 && x.torque>=rest+8; }).map(x=>x.cur));
   const cuts=[], res=[];
   for(let i=1;i<S.length;i++){
     const a=S[i-1], b=S[i];
-    if(a.cur>=10 && b.cur<=2 && b.torque>=rest+8) cuts.push(mx(S.filter(x=>x.t>=b.t-1200 && x.t<=b.t).map(x=>x.spdX10))/10);
-    if(a.cur<=2 && b.cur>=10 && b.spdX10>150) res.push({v:b.spdX10/10, pk:mx(S.filter(x=>x.t>=b.t && x.t<=b.t+1000).map(x=>x.cur))});
+    const V=x=>x.vt??x.spdX10/10;   // trainer : pas de retard ; display : max de la seconde précédente (il retarde)
+    if(a.cur>=10 && b.cur<=2 && b.torque>=rest+8) cuts.push(b.vt!=null ? V(b) : mx(S.filter(x=>x.t>=b.t-1200 && x.t<=b.t).map(x=>x.spdX10))/10);
+    if(a.cur<=2 && b.cur>=10 && V(b)>15) res.push({v:V(b), pk:mx(S.filter(x=>x.t>=b.t && x.t<=b.t+1000).map(x=>x.cur))});
   }
-  const byStair=S_STAIR.map(v=>{ const c=med(P.filter(x=>Math.abs(x.spdX10/10-v)<=0.5 && x.torque>=rest+8).map(x=>x.cur)); return v+':'+(c==null?'–':c); }).join(' ');
+  const byStair=S_STAIR.map(v=>{ const c=med(P.filter(x=>Math.abs((x.vt??x.spdX10/10)-v)<=0.5 && x.torque>=rest+8).map(x=>x.cur)); return v+':'+(c==null?'–':c); }).join(' ');
   const vcut=cuts.length?med(cuts):null, vre=res.length?med(res.map(r=>r.v)):null, surge=(res.length&&cb)?+(med(res.map(r=>r.pk))/cb).toFixed(1):null;
   const vmax=mx(S.map(x=>x.spdX10))/10;
   return {...base, vcut, vre, surge, nCut:cuts.length, vmax, curBase:cb, v:(vcut!=null?'OK':'ATT'),
@@ -2763,7 +2807,7 @@ function nextStepS(){
   const p=proto; if(!p) return;
   if(p.idx>=0) p.results.push(sStepResult(p, p.steps[p.idx]));
   p.idx++; p.samples=[]; p.inSince=null; p.cum=0; p.lastT=null; p.t0=Date.now(); p.state='running';
-  p.dyn={since:null, tPh:Date.now(), n:0, reached:null}; p.sph=null;
+  p.dst={since:null, tPh:Date.now(), n:0, reached:null}; p.sph=null;   // état de l'étape dynamique (≠ p.dyn = mode)
   if(p.idx>=p.steps.length) return endProtoS(false);
   const st=p.steps[p.idx]; p.curId=st.id;
   $('pTitle').textContent=st.id+' — '+st.title+(st.kind==='plateau'?'  ('+p.params.stable+' s cumulées dans la bande, '+p.params.max+' s max)':'');
@@ -2784,7 +2828,8 @@ function sCounted(p, d, now){
 }
 function protoSampleS(d,now,st){
   const p=proto, c=sCounted(p, d, now);
-  p.samples.push({t:now, lvl:curLvl, pow:curPower, pmeca:pmeca, ...d, ...sBmsFields(now), c:c?1:0, sph:p.sph});
+  const vt=vEq();
+  p.samples.push({t:now, lvl:curLvl, pow:curPower, pmeca:pmeca, ...d, ...sBmsFields(now), c:c?1:0, sph:p.sph, vt:vt!=null?+vt.toFixed(2):null});
   if(d.torque>0 && (d.spdX10||0)===0 && (p.tqRest==null || d.torque<p.tqRest)) p.tqRest=d.torque;   // repos = couple mini à l'arrêt
   if(st.kind!=='plateau') return;
   if(sInBand(p, st, d)){ if(p.inSince==null) p.inSince=now; } else p.inSince=null;
@@ -2820,10 +2865,11 @@ function protoTickS(){
     if(el>=p.params.max){ beep(3); return nextStepS(); }
   } else if(st.kind==='launch'){
     /* stop (arrêt ≥ 2 s) → bip → go (jusqu'à launchV ou launchMax s) → after (3 s d'observation du dépassement) */
-    const spd=lastSpdX10/10, D=p.dyn;
+    const spd=vBest(), D=p.dst, ve=vEq();
     if(curLvl!==st.lvl){ pr.textContent='NIVEAU '+st.lvl+' ATTENDU (display '+curLvl+')'; pr.style.background='#7a1f1c'; p.t0=now; D.since=null; }
     else if(p.sph==='stop'){
-      if(spd<0.5){ if(D.since==null) D.since=now; } else D.since=null;
+      // arrêt RÉEL : volant du trainer immobile (le display affiche 0 dès ~6 km/h)
+      if((ve!=null ? trSpd<0.5 : spd<0.5) && lastSpdX10===0){ if(D.since==null) D.since=now; } else D.since=null;
       const w=D.since?(now-D.since)/1000:0;
       pr.textContent = spd>=0.5 ? 'ARRÊTEZ-VOUS — '+spd.toFixed(1)+' km/h' : 'arrêté '+w.toFixed(0)+' / 2 s — pieds posés, sans pousser';
       pr.style.background='#7a5c12'; $('pStepLeft').textContent='arrêt'; $('pBarStep').style.width='0%';
@@ -2840,7 +2886,7 @@ function protoTickS(){
     }
   } else if(st.kind==='push'){
     /* settle (±2 km/h autour de pushV pendant settleS) → bip → push (pushS) → bip bip → rel (relS) → … ×pushes */
-    const spd=lastSpdX10/10, D=p.dyn, ph=(now-D.tPh)/1000;
+    const spd=vBest(), D=p.dst, ph=(now-D.tPh)/1000;
     $('pStepLeft').textContent=fmtT(S_DYN.pushMax-el)+' max';
     $('pBarStep').style.width=Math.min(100,D.n/S_DYN.pushes*100)+'%';
     if(curLvl!==st.lvl){ pr.textContent='NIVEAU '+st.lvl+' ATTENDU (display '+curLvl+')'; pr.style.background='#7a1f1c'; D.since=null; }
@@ -2862,11 +2908,15 @@ function protoTickS(){
     }
     if(el>=S_DYN.pushMax){ beep(3); return nextStepS(); }
   } else {   // coupure en escalier : S_STAIR_S s par marche, puis 10 s relâchés
+    if(curStreet!==1){   // la coupure n'existe qu'en street ON : on attend (les autres runs se font débridés)
+      pr.textContent='ACTIVEZ LE STREET MODE au display (coupure 25 km/h à mesurer)'; pr.style.background='#7a5c12';
+      p.t0=now; $('pStepLeft').textContent='en attente'; $('pBarStep').style.width='0%'; return;
+    }
     const i=Math.floor(el/S_STAIR_S), target = i<S_STAIR.length ? S_STAIR[i] : null;
     if(target==null && p.sph==='stair'){ p.sph='rel'; beep(1); }
-    pr.textContent = target!=null ? 'marche '+(i+1)+' / '+S_STAIR.length+' — visez '+target+' km/h  (actuel '+(lastSpdX10/10).toFixed(1)+')'
+    pr.textContent = target!=null ? 'marche '+(i+1)+' / '+S_STAIR.length+' — visez '+target+' km/h  (actuel '+vBest().toFixed(1)+')'
                                   : 'RELÂCHEZ, laissez ralentir';
-    pr.style.background = target!=null ? (Math.abs(lastSpdX10/10-target)<=0.7?'#1e6b3f':'#7a5c12') : '#2a3340';
+    pr.style.background = target!=null ? (Math.abs(vBest()-target)<=0.7?'#1e6b3f':'#7a5c12') : '#2a3340';
     $('pStepLeft').textContent=fmtT(st.dur-el);
     $('pBarStep').style.width=Math.min(100,el/st.dur*100)+'%';
     if(el>=st.dur){ beep(2); return nextStepS(); }
@@ -2892,13 +2942,13 @@ function endProtoS(aborted){
   if(ftmsCtrl) trainerResistancePct(20);   // relâcher la charge en fin de run
   // run interrompu : le palier en cours est gardé s'il a déjà ≥ 10 s cumulées
   const cst=p.steps[p.idx]; if(aborted && cst && cst.kind==='plateau' && p.cum>=10000) p.results.push(sStepResult(p, cst));
-  const extra={phase:'S', lvl:p.lvl, seance:!!p.seance, dyn:!!p.dyn, dynCfg:p.dyn?S_DYN:undefined, tqRest:p.tqRest, speeds:p.speeds, band:p.params.band, stableS:p.params.stable, acq:'cumul-v4',
+  const extra={phase:'S', lvl:p.lvl, seance:!!p.seance, dyn:!!p.dyn, loi:!!p.loi, dynCfg:p.dyn?S_DYN:undefined, tqRest:p.tqRest, trK:+trK.toFixed(3), speeds:p.speeds, band:p.params.band, stableS:p.params.stable, acq:'cumul-v4',
     gear:{chainring:p.params.chainring, cog:p.params.cog, circ_mm:p.params.circ}, trainer:p.trainer,
     street:curStreet, mode:curMode, bms:!!bmsDev, results:p.results, aborted:!!aborted};
-  archiveLog('banc', 'protoS-'+(p.seance?'seance':p.dyn?'dyn':'L'+p.lvl+(p.calib?'-calib':'')), extra);
+  archiveLog('banc', 'protoS-'+(p.seance?'seance':p.dyn?'dyn':p.loi?'loi':'L'+p.lvl+(p.calib?'-calib':'')), extra);
   $('protoRun').hidden=true; $('protoDone').hidden=false;
   const pl=p.results.filter(r=>r.kind==='plateau');
-  $('pDoneTitle').textContent=(aborted?'⚠ Run interrompu — ':'')+'Phase S '+(p.calib?'étalonnage L0':p.seance?'séance':p.dyn?'dynamique':'niveau '+p.lvl)+' : '
+  $('pDoneTitle').textContent=(aborted?'⚠ Run interrompu — ':'')+'Phase S '+(p.calib?'étalonnage L0':p.seance?'séance':p.dyn?'dynamique':p.loi?'loi':'niveau '+p.lvl)+' : '
     +pl.filter(r=>r.v==='OK').length+' / '+pl.length+' paliers acquis'
     +(isStock()?' (STOCK'+(p.trainer.ctrl?'':', charge manuelle')+')':' (OSF)');
   $('pVerdict').innerHTML='<tr><th>Palier</th><th>État</th><th>v km/h</th><th>cad≈</th><th>couple</th><th>cur</th><th>roue W</th><th>batt W</th><th>stable</th><th>Détail</th></tr>'

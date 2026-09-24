@@ -22,6 +22,12 @@ vitesse du display : elle RETARDE et se fige ~1-3 s à l'arrêt des impulsions, 
 """
 import json, sys, glob, os, re, statistics as st
 
+# Modèle Tongsheng prod V3.6.5 48 V (tableau « Gear parameters », lignes 110-115)
+GEAR_ASSIST = [0.4, 0.55, 0.7, 0.85, 1.4]
+GEAR_CURRENT = [0.3, 0.5, 0.6, 0.7, 1.0]
+IMAX = 23.0
+K_TR = 0.917   # vitesse trainer / vitesse display en régime établi (réestimé par fichier)
+
 
 def load(path):
     rows = [json.loads(l) for l in open(path, encoding='utf-8') if l.strip()]
@@ -44,10 +50,21 @@ def f(v, d=0):
 
 
 def spd(r):
-    """Vitesse km/h : celle du TRAINER (`tspd`, FTMS ~6 Hz, enregistrée depuis le 2026-09-24) si présente,
-    sinon celle du display (lissée, ~1,7 mise à jour/s, figée 1-3 s à l'arrêt des impulsions)."""
+    """Vitesse km/h À L'ÉCHELLE DU DISPLAY : celle du TRAINER (`tspd`, FTMS ~6 Hz) divisée par K_TR si
+    présente — le display est lissé, faux au décollage (41,8 km/h pour 5,9 réels) et figé 1-3 s à
+    l'arrêt ; sinon celle du display."""
     t = r.get('tspd')
-    return t if t is not None else (r.get('spdX10') or 0) / 10
+    return t / K_TR if t is not None else (r.get('spdX10') or 0) / 10
+
+
+def k_trainer(R):
+    """Rapport tspd / display sur les échantillons stables (display 12-30 km/h, deux vitesses stables)."""
+    q = []
+    for a, b in zip(R, R[1:]):
+        if b.get('tspd') and a.get('tspd') and 120 <= (b.get('spdX10') or 0) <= 300 \
+                and abs(b['spdX10'] - a['spdX10']) < 4 and abs(b['tspd'] - a['tspd']) < 0.4:
+            q.append(b['tspd'] / (b['spdX10'] / 10))
+    return st.median(q) if len(q) >= 20 else K_TR
 
 
 def lvl_of(stp, r):
@@ -80,7 +97,7 @@ def launches(R, rest):
         out.append(dict(kind='départ', lvl=lvl_of(R[k0].get('stp'), R[k0]), stp=R[k0].get('stp'),
                         tq=med([r.get('torque') for r in W[:k15 + 1]]),
                         delay=(W[kc]['t'] - t0) / 1000 if kc is not None else None, t15=(W[k15]['t'] - t0) / 1000,
-                        curPk=mx([r.get('cur') for r in A]), pbPk=mx([r.get('pbat') for r in A]),
+                        curPk=mx([r.get('cur') for r in A]), pbPk=mx([r.get('pbat') for r in A]), ibPk=mx([r.get('ibat') for r in A]),
                         pmPk=mx([r.get('pmeca') for r in A]), vmax=mx([spd(r) for r in A]) or 0))
         i = j + 1
     return out
@@ -124,7 +141,7 @@ def pushes(R):
         dtq = (mx([r.get('torque') for r in resp]) or 0) - (tq0 or 0)
         dc = (mx([r.get('cur') for r in resp]) or 0) - (c0 or 0)
         pbm = mx([r.get('pbat') for r in resp])
-        out.append(dict(kind='reprise', lvl=lvl_of(R[i].get('stp'), R[i]), v0=v0, dtq=dtq, dcur=dc,
+        out.append(dict(kind='reprise', lvl=lvl_of(R[i].get('stp'), R[i]), v0=v0, dtq=dtq, dcur=dc, ibPk=mx([r.get('ibat') for r in resp]),
                         k=(dc / dtq) if dtq > 3 else None, dpb=(pbm - pb0) if pbm is not None and pb0 is not None else None,
                         dv=(mx([spd(r) for r in resp]) or 0) - v0))
     return out
@@ -135,12 +152,13 @@ def cuts(R, rest):
     for i in range(1, len(R)):
         a, b = R[i - 1], R[i]
         ca, cb = a.get('cur') or 0, b.get('cur') or 0
-        if ca >= 10 and cb <= 2 and (b.get('torque') or 0) >= rest + 8:
-            v = (mx([r.get('spdX10') for r in R if b['t'] - 1200 <= r['t'] <= b['t']]) or 0) / 10
+        if ca >= 10 and cb <= 2 and (b.get('torque') or 0) >= rest + 8 and b.get('street', 1):
+            # trainer : pas de retard ; display : max de la seconde précédente (il retarde)
+            v = spd(b) if b.get('tspd') is not None else (mx([r.get('spdX10') for r in R if b['t'] - 1200 <= r['t'] <= b['t']]) or 0) / 10
             cu.append(dict(lvl=lvl_of(b.get('stp'), b), v=v, stp=b.get('stp')))
-        if ca <= 2 and cb >= 10 and (b.get('spdX10') or 0) > 150:
+        if ca <= 2 and cb >= 10 and spd(b) > 15 and b.get('street', 1):
             pk = mx([r.get('cur') for r in R if b['t'] <= r['t'] <= b['t'] + 1000])
-            re_.append(dict(lvl=lvl_of(b.get('stp'), b), v=(b.get('spdX10') or 0) / 10, pk=pk, stp=b.get('stp')))
+            re_.append(dict(lvl=lvl_of(b.get('stp'), b), v=spd(b), pk=pk, stp=b.get('stp')))
     return cu, re_
 
 
@@ -157,6 +175,8 @@ def main(argv):
         meta, R = load(fn)
         if meta.get('phase') != 'S':
             continue
+        global K_TR
+        K_TR = k_trainer(R)
         still = [r.get('torque') for r in R if spd(r) < 0.5 and r.get('torque')]
         rest = a.rest or meta.get('tqRest') or (min(still) if still else 90)
         print('\n' + '=' * 78 + '\n%s  (firmware %s, couple de repos %s)' % (os.path.basename(fn), {1: 'OSF', 2: 'STOCK'}.get(meta.get('proto'), '?'), f(rest)))
@@ -188,6 +208,23 @@ def main(argv):
                 print('  L%s : %d coupure(s) à %s km/h (médiane %s) ; %d réengagement(s) à %s km/h, pic cur %s' % (
                     lv, len(c), ' / '.join(f(x, 1) for x in c) or '–', f(med(c), 1), len(r),
                     ' / '.join(f(e['v'], 1) for e in r) or '–', ' / '.join(f(e['pk']) for e in r) or '–'))
+        if L or P:
+            print('\nModèle Tongsheng (Gear_current × %g A = plafond batterie du niveau ; k normalisé par Gear assist) :' % IMAX)
+            for lv in range(1, 6):
+                cap = GEAR_CURRENT[lv - 1] * IMAX
+                dl = [e['ibPk'] for e in L if e['lvl'] == lv and e.get('ibPk')]
+                pl = [e for e in P if e['lvl'] == lv]
+                ib = max(dl) if dl else None
+                kr = med([e['k'] for e in pl])
+                rp = max([e['ibPk'] or 0 for e in pl]) if pl else None
+                if ib is None and kr is None:
+                    continue
+                print('  L%d : départ %s A / plafond %.1f A%s · reprises k/GA = %s, I batt max %s A%s' % (
+                    lv, f(ib, 1), cap, ('  (%+.0f %%)' % ((ib / cap - 1) * 100)) if ib else '',
+                    f(kr / GEAR_ASSIST[lv - 1], 2) if kr is not None else '–', f(rp, 1),
+                    '  ⚠ plafond atteint : k mesure le plafond, pas le gain' if rp and rp > 0.9 * cap else ''))
+        streets = sorted(set(r.get('street') for r in R if r.get('street') is not None))
+        print('\n  street : %s ; échelle trainer/display = %.3f' % ({(0,): 'OFF (débridé)', (1,): 'ON', (0, 1): 'ON puis OFF (mixte)'}.get(tuple(streets), str(streets)), K_TR))
         if not (L or A or P or C or RE):
             print('  (aucun évènement dynamique)')
     return 0
