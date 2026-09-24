@@ -4,7 +4,7 @@ protoS-report.py — dépouille les runs de la PHASE S (niveau × vitesse, péda
 et construit la base « loi d'assistance » d'un moteur, stock ou OSF.
 
 Usage :
-    python tools/protoS-report.py C:/Users/yanni/Downloads            # tous les *protoS-L*.jsonl du dossier
+    python tools/protoS-report.py C:/Users/yanni/Downloads            # tous les *protoS-*.jsonl du dossier
     python tools/protoS-report.py ../Dev-Agent-Syklo/syklo-logs/logs/Z8-BANC   # récursif
     python tools/protoS-report.py <fichiers…> [--id Z8-BANC] [--csv sortie.csv] [--eta 0.70]
 
@@ -18,11 +18,15 @@ Principe (spec chantier-z8-osf/specs/protocole-S-caracterisation-stock.md v3) :
     gain = P_assist / P_cycliste. `cur` (courant PHASE en stock, batterie en OSF) et
     `pbat` (BMS JBD, si connecté) sont reportés tels quels ; η = P_assist / pbat.
 
-Les fenêtres stables sont relues dans les lignes (`stb` = 1, groupées par `stp`) ;
-à défaut, les médianes de `meta.results` sont utilisées. Comparaison stock ↔ OSF :
-mêmes paliers → même pmeca → comparer P_assist (ou pbat) palier par palier.
+Les échantillons comptés sont relus dans les lignes (`stb` = 1, groupés par `stp`) ;
+à défaut, les médianes de `meta.results` sont utilisées. Le niveau et la charge sont lus
+dans l'identifiant du palier (`S-L3-v20`, `S-L0-r70-v20` = résistance 70 %, `S-L0-e150-v18`
+= ERG 150 W), ce qui accepte les runs « séance » (tous les niveaux dans un fichier).
+Comparaison stock ↔ OSF : mêmes paliers, même charge → même pmeca → comparer **pbat**
+(indépendant du firmware, la grandeur du labo) et P_assist palier par palier ; entre
+séances, CV(pbat) > 10 % = condition non contrôlée à chercher.
 """
-import json, sys, glob, os, statistics as st, math, csv
+import json, sys, glob, os, re, statistics as st, math, csv
 
 ETA = 0.70          # rendement batterie→roue par défaut (analyse 18, L3) — seulement pour l'estimation pbat sans BMS
 
@@ -95,7 +99,7 @@ def fmt(v, d=0):
 def main(argv):
     import argparse
     ap = argparse.ArgumentParser(description='Dépouillement des runs de la phase S (niveau × vitesse).')
-    ap.add_argument('paths', nargs='+', help='dossiers (récursif) ou fichiers *protoS-L*.jsonl')
+    ap.add_argument('paths', nargs='+', help='dossiers (récursif) ou fichiers *protoS-*.jsonl')
     ap.add_argument('--id', help='ne garder que ce moteur (meta.id)')
     ap.add_argument('--csv', help='écrire aussi la table niveau × vitesse en CSV')
     ap.add_argument('--eta', type=float, default=ETA, help='rendement batterie→roue attendu (info)')
@@ -104,12 +108,12 @@ def main(argv):
     files = []
     for a in a.paths:
         if os.path.isdir(a):
-            files += glob.glob(os.path.join(a, '**', '*protoS-L*.jsonl'), recursive=True)
+            files += glob.glob(os.path.join(a, '**', '*protoS-*.jsonl'), recursive=True)
         else:
             files += glob.glob(a)
     files = sorted(set(files))
     if not files:
-        print('aucun fichier *protoS-L*.jsonl trouvé'); return 1
+        print('aucun fichier *protoS-*.jsonl trouvé'); return 1
 
     # ---- ingestion : un enregistrement par palier, clé (id, proto, lvl, vT)
     runs = []
@@ -121,24 +125,27 @@ def main(argv):
             continue
         pls = plateaus_from_lines(rows, meta)
         proto = 'stock' if meta.get('proto') == 2 else 'osf' if meta.get('proto') == 1 else '?'
+        tr = meta.get('trainer') or {}
+        grid_charge = '%s %s' % (tr.get('mode'), tr.get('val'))
         for stp, m in pls.items():
-            try:
-                vT = float(stp.split('-v')[1])
-            except Exception:
+            mv = re.search(r'-v(\d+(?:\.\d+)?)', stp)
+            if not mv:
                 continue
-            erg = None
-            if '-e' in stp:
-                try: erg = float(stp.split('-e')[1].split('-')[0])
-                except Exception: pass
-            tr = meta.get('trainer') or {}
+            vT = float(mv.group(1))
+            ml = re.match(r'S-L(\d)', stp)
+            lvl = int(ml.group(1)) if ml else int(meta.get('lvl') or m.get('lvl') or 0)
+            me, mr = re.search(r'-e(\d+)-', stp), re.search(r'-r(\d+)-', stp)
+            erg = float(me.group(1)) if me else None
+            res = int(mr.group(1)) if mr else None
+            charge = ('ERG %g W' % erg) if erg else ('res %d' % res) if res else grid_charge
             m.update(file=os.path.basename(f), id=meta.get('id'), fw=proto, motorFw=meta.get('motorFw'),
-                     day=(meta.get('ts') or '')[:10], lvl=int(meta.get('lvl', m.get('lvl') or 0)), vT=vT, erg=erg,
-                     trainer=json.dumps(tr), charge=('ERG (étalonnage)' if erg else '%s %s' % (tr.get('mode'), tr.get('val'))),
-                     street=meta.get('street'))
+                     day=(meta.get('ts') or '')[:10], lvl=lvl, vT=vT, erg=erg,
+                     trainer=json.dumps(tr), charge=charge, street=meta.get('street'))
             runs.append(m)
         for r in (meta.get('results') or []):
             if r.get('kind') == 'sweep':
-                runs.append(dict(sweep=True, file=os.path.basename(f), id=meta.get('id'), fw=proto, lvl=int(meta.get('lvl', 0)),
+                runs.append(dict(sweep=True, file=os.path.basename(f), id=meta.get('id'), fw=proto,
+                                 lvl=int(r.get('lvl') if r.get('lvl') is not None else meta.get('lvl') or 0),
                                  vcut=r.get('vcut'), vmax=r.get('vmax'), curBase=r.get('curBase'), d=r.get('d')))
     if not runs:
         print('aucun palier exploitable'); return 1
@@ -168,10 +175,10 @@ def main(argv):
                     len(xs), off, k, r2, (1 / k if k else float('nan'))))
                 if k <= 0 or r2 < 0.8:
                     print('⚠ étalonnage douteux (pente ≤ 0 ou r² < 0,8) : signal couple non linéaire, ou paliers L0 tous au même couple '
-                          '(à résistance fixe le couple L0 est le même à toutes les vitesses → faire le run « étalonnage L0 en ERG »)')
+                          '(à résistance fixe le couple L0 est le même à toutes les vitesses → étalonnage L0 à plusieurs résistances, mode « séance » ou « étalonnage L0 »)')
                     cal = None
                 if len(set(round(x) for x in xs)) < 3:
-                    print('⚠ moins de 3 couples distincts au L0 : étalonnage fragile — faire le run « étalonnage L0 en ERG »')
+                    print('⚠ moins de 3 couples distincts au L0 : étalonnage fragile — faire l’étalonnage L0 (résistances 40/70/100 %)')
         else:
             print('⚠ aucun palier L0 : pas d’étalonnage de l’effort → P_cycliste / P_assist non calculables (faire un run L0)')
 
@@ -180,13 +187,15 @@ def main(argv):
           RL = [r for r in R if r['charge'] == ch]
           print('\n— charge : %s —' % ch)
           print('%-4s %-6s %-6s %-7s %-7s %-8s %-8s %-6s %-6s %-7s %-5s %s' % (
-            'lvl', 'v', 'cad≈', 'roue W', 'torque', 'P_cycl', 'P_assist', 'gain', 'cur', 'pbat W', 'η', 'n (CV pmeca)'))
+            'lvl', 'v', 'cad≈', 'roue W', 'torque', 'P_cycl', 'P_assist', 'gain', 'cur', 'pbat W', 'η', 'n (CV pmeca / pbat)'))
           for lvl in sorted(set(r['lvl'] for r in RL)):
             for (vT, erg) in sorted(set((r['vT'], r['erg']) for r in RL if r['lvl'] == lvl), key=lambda t: (t[0], t[1] or 0)):
                 G = [r for r in RL if r['lvl'] == lvl and r['vT'] == vT and r['erg'] == erg]
                 g = {k: med([r.get(k) for r in G]) for k in ('spd', 'cadEst', 'pmeca', 'torque', 'cur', 'pbat', 'vbat', 'volt')}
                 pm = [r['pmeca'] for r in G if r['pmeca']]
                 cv = (st.pstdev(pm) / st.mean(pm) * 100) if len(pm) > 1 and st.mean(pm) else None
+                pb = [r['pbat'] for r in G if r.get('pbat')]
+                cvb = (st.pstdev(pb) / st.mean(pb) * 100) if len(pb) > 1 and st.mean(pb) > 15 else None
                 prid = pas = gain = eta_m = None
                 if cal and g['torque'] is not None and g['cadEst']:
                     k, off, _ = cal
@@ -205,10 +214,11 @@ def main(argv):
                 print('%-4d %-6s %-6s %-7s %-7s %-8s %-8s %-6s %-6s %-7s %-5s %d%s%s%s' % (
                     lvl, fmt(g['spd'], 1), fmt(g['cadEst']), fmt(g['pmeca']), fmt(g['torque']), fmt(prid), fmt(pas),
                     fmt(gain, 2), fmt(g['cur']), fmt(g['pbat']), fmt(eta_m, 2), len(G),
-                    (' (%.0f %%)' % cv) if cv is not None else '', (' ERG %g W' % erg) if erg else '', note))
+                    (' (%.0f %% / %s)' % (cv, ('%.0f %%' % cvb) if cvb is not None else '–')) if cv is not None else '',
+                    ' ⚠ CV > 10 %' if (cvb or 0) > 10 or (cv or 0) > 10 else '', note))
                 csv_rows.append(dict(id=mid, fw=fw, charge=ch, erg=erg, lvl=lvl, vT=vT, n=len(G), spd=g['spd'], cadEst=g['cadEst'], pmeca=g['pmeca'],
                                      torque=g['torque'], P_rider=prid, P_assist=pas, gain=gain, cur=g['cur'], pbat=g['pbat'],
-                                     vbat=g['vbat'], volt=g['volt'], eta=eta_m, cv_pmeca=cv))
+                                     vbat=g['vbat'], volt=g['volt'], eta=eta_m, cv_pmeca=cv, cv_pbat=cvb))
         # ---- gain moyen par niveau et par charge (résumé « loi »)
         if cal:
             print('\nGain apparent P_assist/P_cycliste par niveau (médiane sur les vitesses, par charge) :')
