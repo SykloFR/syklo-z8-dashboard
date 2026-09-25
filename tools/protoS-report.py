@@ -29,6 +29,13 @@ séances, CV(pbat) > 10 % = condition non contrôlée à chercher.
 import json, sys, glob, os, re, statistics as st, math, csv
 
 ETA = 0.70          # rendement batterie→roue par défaut (analyse 18, L3) — seulement pour l'estimation pbat sans BMS
+# Modèle Tongsheng de la prod V3.6.5 48 V (« Z8 MOTOR SYKLO Gear parameters », lignes 110-115) :
+# Gear assist = gain proportionnel ; Gear_current = plafond de courant batterie du niveau (× IMAX).
+GEAR_ASSIST = [0.4, 0.55, 0.7, 0.85, 1.4]
+GEAR_CURRENT = [0.3, 0.5, 0.6, 0.7, 1.0]
+IMAX = 23.0
+# Banc de certification (analyse 18) : Pbat ≈ c · Gear assist · P_pédale à 150 W pédale, c4 = 2,80, c5 = 2,95
+CERTIF_C = {4: 2.80, 5: 2.95}
 
 
 def load(path):
@@ -43,13 +50,18 @@ def med(a):
 
 
 def cad_est(spd_kmh, gear):
-    circ = gear.get('circ_mm', 2050) / 1000.0
+    circ = gear.get('circ_mm', 2300) / 1000.0
     return spd_kmh * 1000 / 60 / circ * gear.get('cog', 14) / gear.get('chainring', 44)
+
+
+CIRC_OVERRIDE = None   # --circ : circonférence RÉGLÉE AU DISPLAY si celle du fichier est fausse
 
 
 def plateaus_from_lines(rows, meta):
     """Médianes par palier sur les lignes stb=1 ; repli sur meta.results."""
-    gear = (meta or {}).get('gear') or {'chainring': 44, 'cog': 14, 'circ_mm': 2050}
+    gear = dict((meta or {}).get('gear') or {'chainring': 44, 'cog': 14, 'circ_mm': 2300})
+    if CIRC_OVERRIDE:
+        gear['circ_mm'] = CIRC_OVERRIDE
     out = {}
     by = {}
     for r in rows:
@@ -90,6 +102,82 @@ def linreg(xs, ys):
     return k, b, r2
 
 
+def fit_power(pts):
+    """y = c · x^α par régression log-log ; renvoie (c, α, r²) ou None."""
+    q = [(math.log(x), math.log(y)) for x, y in pts if x > 5 and y > 5]
+    if len(q) < 3:
+        return None
+    reg = linreg([a for a, _ in q], [b for _, b in q])
+    if not reg:
+        return None
+    k, b, r2 = reg
+    return math.exp(b), k, r2
+
+
+def loi_section(rows, ga, gc, imax):
+    """LOI : P_assist (roue) en fonction de P_cycliste, par niveau, puis normalisée par Gear assist.
+    Formes testées : linéaire avec décalage (a·P + b) et puissance (c·P^α, α < 1 = gain qui baisse quand
+    l'effort monte — ce que suggèrent le banc maison (20-80 W) et le labo (150 W))."""
+    allp = [r for r in rows if r['lvl'] >= 1 and r.get('P_rider') and r.get('P_assist') is not None and r['P_rider'] > 5]
+    # SEUIL DE COUPLE : sous ~9-10 Nm le stock n'assiste pas (ou prend / coupe) — run loi du 2026-09-24,
+    # résistance 40 % : cur médian 0 à tous les niveaux. Ces paliers sont exclus des ajustements.
+    off = [r for r in allp if (r.get('cur') or 0) < 3 or r['P_assist'] < 10]
+    pts = [r for r in allp if r not in off]
+    if off:
+        print('\nSOUS LE SEUIL DE COUPLE (assistance nulle ou intermittente, exclus des ajustements) :')
+        for r in off:
+            print('  L%d %-10s v %s : couple %s, P_cycl %.0f W, cur %s' % (r['lvl'], r['charge'], fmt(r['spd'], 1), fmt(r['torque']), r['P_rider'], fmt(r['cur'])))
+    if len(pts) < 3:
+        return
+    print('\nLOI D\'ASSISTANCE — P_assist(roue) = f(P_cycliste) ; plafond batterie = Gear_current × %g A' % imax)
+    print('  %-4s %-3s %-12s %-10s %-24s %-24s %s' % ('niv', 'n', 'P_cycl W', 'cad rpm', 'linéaire a·P+b (r²)', 'puissance c·P^α (r²)', 'plafond'))
+    for lv in sorted(set(r['lvl'] for r in pts)):
+        G = [r for r in pts if r['lvl'] == lv]
+        xs, ys = [r['P_rider'] for r in G], [r['P_assist'] for r in G]
+        lin = linreg(xs, ys) if len(G) >= 2 else None
+        pw = fit_power(list(zip(xs, ys)))
+        cap_w = gc[lv - 1] * imax * (st.median([r['vbat'] for r in G if r.get('vbat')] or [50]))
+        pk = max([r['pbat'] or 0 for r in G])
+        print('  L%-3d %-3d %-12s %-10s %-24s %-24s %s' % (
+            lv, len(G), '%.0f-%.0f' % (min(xs), max(xs)), '%.0f-%.0f' % (min(r['cadEst'] for r in G), max(r['cadEst'] for r in G)),
+            ('%.2f·P %+.0f (%.2f)' % (lin[0], lin[1], lin[2])) if lin else '–',
+            ('%.2f·P^%.2f (%.2f)' % (pw[0], pw[1], pw[2])) if pw else '–',
+            'pbat max %.0f / %.0f W%s' % (pk, cap_w, ' ⚠ ATTEINT' if pk > 0.9 * cap_w else '')))
+    # normalisation par Gear assist : si les niveaux se superposent, loi = Gear_assist × f(P)
+    norm = [(r['P_rider'], r['P_assist'] / ga[r['lvl'] - 1]) for r in pts if r['P_assist'] > 5]
+    pw = fit_power(norm)
+    if pw:
+        c, al, r2 = pw
+        print('\n  Normalisée : P_assist / Gear_assist = %.2f · P_cycl^%.2f  (r² = %.2f, %d paliers, tous niveaux)' % (c, al, r2, len(norm)))
+        print('  → gain P_assist/P_cycl = Gear_assist × %.2f × P^(%.2f) : %s' % (c, al - 1, ', '.join(
+            'à %d W : %.2f×GA' % (P, c * P ** (al - 1)) for P in (40, 80, 150))))
+        print('  Superposition des niveaux (mesure / loi commune, 1,00 = parfait) : ' + ' · '.join(
+            'L%d %.2f' % (lv, st.median([r['P_assist'] / (ga[lv - 1] * c * r['P_rider'] ** al) for r in pts if r['lvl'] == lv and r['P_assist'] > 5]))
+            for lv in sorted(set(r['lvl'] for r in pts))))
+        etas = [r['eta'] for r in pts if r.get('eta')]
+        eta = st.median(etas) if etas else ETA
+        print('  Extrapolation à 150 W pédale (point de certification, η = %.2f) vs labo (analyse 18) :' % eta)
+        for lv in (4, 5):
+            pa = ga[lv - 1] * c * 150 ** al
+            pb = min(pa / eta, gc[lv - 1] * imax * 50)
+            lab = CERTIF_C[lv] * ga[lv - 1] * 150
+            print('    L%d : P_assist %.0f W, pbat %.0f W  |  labo ≈ %.0f W  (écart %+.0f %%)%s' % (
+                lv, pa, pb, lab, (pb / lab - 1) * 100, '  [extrapolé au-delà des mesures]' if max(x for x, _ in norm) < 120 else ''))
+    # dépendance à la cadence : même niveau, même charge, deux vitesses
+    pairs = []
+    for lv in sorted(set(r['lvl'] for r in pts)):
+        for ch in sorted(set(r['charge'] for r in pts if r['lvl'] == lv)):
+            G = sorted([r for r in pts if r['lvl'] == lv and r['charge'] == ch], key=lambda r: r['cadEst'])
+            if len(G) >= 2 and pw:
+                lo, hi = G[0], G[-1]
+                f = lambda r: r['P_assist'] / (ga[lv - 1] * pw[0] * r['P_rider'] ** pw[1])
+                pairs.append('L%d %s : %.0f→%.0f rpm, écart à la loi %+.0f %% → %+.0f %%' % (lv, ch, lo['cadEst'], hi['cadEst'], (f(lo) - 1) * 100, (f(hi) - 1) * 100))
+    if pairs:
+        print('  Cadence (même charge, deux vitesses ; un écart qui change de signe avec la cadence = loi dépendante de la cadence) :')
+        for p in pairs:
+            print('    ' + p)
+
+
 def fmt(v, d=0):
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return '–'
@@ -103,7 +191,18 @@ def main(argv):
     ap.add_argument('--id', help='ne garder que ce moteur (meta.id)')
     ap.add_argument('--csv', help='écrire aussi la table niveau × vitesse en CSV')
     ap.add_argument('--eta', type=float, default=ETA, help='rendement batterie→roue attendu (info)')
+    ap.add_argument('--gear-assist', default=','.join(str(x) for x in GEAR_ASSIST), help='Gear assist L1..L5 (défaut prod V3.6.5 48 V)')
+    ap.add_argument('--gear-current', default=','.join(str(x) for x in GEAR_CURRENT), help='Gear_current L1..L5 (fraction de --imax)')
+    ap.add_argument('--imax', type=float, default=IMAX, help='courant batterie max (A) auquel s\'applique Gear_current')
+    ap.add_argument('--circ', type=float, help='circonférence (mm) RÉGLÉE AU DISPLAY, remplace celle des fichiers '
+                    '(les runs du 2026-09-24 matin portent 2050 alors que le display du banc est à 2300). '
+                    'Ne change ni les gains ni pbat, seulement les N·m et les rpm')
     a = ap.parse_args(argv)
+    global CIRC_OVERRIDE
+    CIRC_OVERRIDE = a.circ
+    ga = [float(x) for x in a.gear_assist.split(',')]
+    gc = [float(x) for x in a.gear_current.split(',')]
+    imax = a.imax
     want_id, eta, opts = a.id, a.eta, {'--csv': a.csv}
     files = []
     for a in a.paths:
@@ -134,10 +233,11 @@ def main(argv):
             vT = float(mv.group(1))
             ml = re.match(r'S-L(\d)', stp)
             lvl = int(ml.group(1)) if ml else int(meta.get('lvl') or m.get('lvl') or 0)
-            me, mr = re.search(r'-e(\d+)-', stp), re.search(r'-r(\d+)-', stp)
+            me, mr, mg = re.search(r'-e(\d+)-', stp), re.search(r'-r(\d+)-', stp), re.search(r'-g(\d+(?:\.\d+)?)-', stp)
             erg = float(me.group(1)) if me else None
             res = int(mr.group(1)) if mr else None
-            charge = ('ERG %g W' % erg) if erg else ('res %d' % res) if res else grid_charge
+            grade = float(mg.group(1)) if mg else None
+            charge = ('ERG %g W' % erg) if erg else ('res %d' % res) if res else ('pente %g %%' % grade) if grade else grid_charge
             m.update(file=os.path.basename(f), id=meta.get('id'), fw=proto, motorFw=meta.get('motorFw'),
                      day=(meta.get('ts') or '')[:10], lvl=lvl, vT=vT, erg=erg,
                      trainer=json.dumps(tr), charge=charge, street=meta.get('street'))
@@ -227,6 +327,8 @@ def main(argv):
                     gs = [r['gain'] for r in csv_rows if r['id'] == mid and r['fw'] == fw and r['charge'] == ch and r['lvl'] == lvl and r['gain'] is not None]
                     if gs:
                         print('  %s · L%d : %.2f  (%s)' % (ch, lvl, st.median(gs), ' / '.join('%.2f' % x for x in gs)))
+        if cal:
+            loi_section([r for r in csv_rows if r['id'] == mid and r['fw'] == fw], ga, gc, imax)
         if SW:
             print('\nCoupure (traversées 20→26 km/h) :')
             for r in SW:
