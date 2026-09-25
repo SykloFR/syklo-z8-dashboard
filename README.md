@@ -327,6 +327,13 @@ La chaîne d'entrée (capteur de couple → loi des niveaux → régulation). R�
 
 Comparable uniquement à conditions égales (firmware moteur, preset display, street, batterie).
 
+**Jeton d'archivage (corrigé le 2026-09-25)** : il est rangé **par adresse de page** (stockage
+local du navigateur). Celui saisi sur `syklofr.github.io` n'existe pas pour `localhost:8765`, et
+inversement : il faut le saisir **une fois sur chaque adresse**. Il s'enregistre désormais **dès le
+collage** (ou à la sortie du champ, ou sur Entrée), avec relecture de contrôle ; un refus du
+navigateur (navigation privée, boucliers Brave « oublier ce site ») est signalé. Le bandeau indique
+l'adresse concernée. À l'enregistrement, la file d'attente (runs faits sans jeton) part toute seule.
+
 ### Phase S — caractérisation niveau × vitesse en pédalage (stock OU OSF)
 
 Constitue la base « loi d'assistance » d'un firmware (stock Tongsheng à répliquer sous

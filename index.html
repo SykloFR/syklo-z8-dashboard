@@ -3682,10 +3682,30 @@ function arcSave(){
   arcSummary();
 }
 function arcToken(){ try { return localStorage.getItem('arc.token') || ''; } catch(_){ return ''; } }
+const ARC_HOST = (typeof location !== 'undefined' && location.host) || 'ce navigateur';
 function arcSummary(){
   const id = arcIdClean();
   $('arcSumId').textContent = id === 'SANS-ID' ? '(identifiant non renseigné)' : id + ' · ' + $('arcType').value + ' · ' + $('arcCtx').value;
-  $('arcSumSt').textContent = arcToken() ? 'jeton ✓' : 'jeton absent';
+  // Le jeton est rangé PAR ADRESSE DE PAGE (localStorage) : celui saisi sur syklofr.github.io
+  // n'existe pas pour localhost:8765 et inversement — on affiche donc l'adresse concernée.
+  $('arcSumSt').textContent = arcToken() ? 'jeton ✓ ('+ARC_HOST+')' : 'jeton absent pour '+ARC_HOST+' — à saisir ici';
+  $('arcSumSt').className = 'st ' + (arcToken() ? 'ok' : 'bad');
+}
+/* Enregistrement du jeton (2026-09-25) : il ne partait qu'au clic sur le bouton — un jeton collé puis
+   la page quittée était perdu, et un refus d'écriture du navigateur affichait quand même
+   « enregistré ». Désormais : enregistrement AUTOMATIQUE au collage / à la sortie du champ / Entrée,
+   relecture de contrôle, et demande de stockage persistant (pas d'éviction automatique). */
+function arcSaveToken(v){
+  v = (v||'').trim();
+  if (!v) { arcStatus('jeton vide', 'bad'); return false; }
+  let ok = false;
+  try { localStorage.setItem('arc.token', v); ok = localStorage.getItem('arc.token') === v; } catch(_){}
+  if (!ok) { arcStatus('ÉCHEC : le navigateur refuse le stockage (navigation privée ? boucliers Brave « oublier ce site » ?) — jeton non enregistré', 'bad'); return false; }
+  $('arcTok').value = '';
+  try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch(_){}
+  arcSummary(); arcStatus('jeton enregistré pour '+ARC_HOST+' (à ressaisir une fois sur chaque autre adresse du dashboard)', 'ok');
+  arcFlush(true);   // envoie la file d'attente (runs faits sans jeton)
+  return true;
 }
 function arcIdClean(){
   const v = ($('arcId').value||'').trim().normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().replace(/[^A-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'');
@@ -3759,24 +3779,38 @@ async function arcFlush(silent){
   let n = 0;
   for (const item of q) {
     try { await arcSend(item); await arcQueueDel(item.path); n++; }
-    catch (e) { arcStatus('renvoi échoué : '+e.message, 'bad'); if (e.status === 401 || e.status === 403) break; }
+    catch (e) { arcStatus('renvoi échoué : '+(e.status===403?'HTTP 403 — le jeton n’a pas le droit d’ÉCRIRE (Contents : Read and write) — cliquez « Tester »':e.message), 'bad'); if (e.status === 401 || e.status === 403) break; }
   }
   arcQueueUi();
   if (n) arcStatus(n+' fichier(s) renvoyé(s)', 'ok');
 }
-$('btnArcTok').onclick = () => { const v = $('arcTok').value.trim(); if (!v) { arcStatus('jeton vide', 'bad'); return; }
-  try { localStorage.setItem('arc.token', v); } catch(_){} $('arcTok').value = ''; arcSummary(); arcStatus('jeton enregistré dans ce navigateur', 'ok'); arcFlush(true); };
+$('btnArcTok').onclick = () => arcSaveToken($('arcTok').value);
+$('arcTok').addEventListener('change', () => { if ($('arcTok').value.trim()) arcSaveToken($('arcTok').value); });
+$('arcTok').addEventListener('paste', () => setTimeout(() => { if ($('arcTok').value.trim()) arcSaveToken($('arcTok').value); }, 0));
+$('arcTok').addEventListener('keydown', e => { if (e.key === 'Enter') arcSaveToken($('arcTok').value); });
+/* Test du jeton (2026-09-25) : `permissions.push` du GET /repos reflète les droits du COMPTE, pas
+   ceux du jeton fine-grained → « écriture ✓ » s'affichait alors que l'envoi échouait en 403
+   (« Resource not accessible by personal access token »). Test d'écriture RÉEL et sans trace :
+   création d'un blob Git (POST /git/blobs, exige Contents: write) — aucun commit, aucun fichier,
+   l'objet orphelin est ramassé par GitHub. */
 $('btnArcTest').onclick = async () => {
   const tok = arcToken(); if (!tok) { arcStatus('jeton absent', 'bad'); return; }
-  arcStatus('test…');
-  try { const r = await fetch(GH_API+'/repos/'+ARC_REPO, { headers:{ 'Authorization':'Bearer '+tok, 'Accept':'application/vnd.github+json', 'X-GitHub-Api-Version':'2022-11-28' } });
-    if (r.ok) { const j = await r.json(); arcStatus('jeton OK — '+j.full_name+(j.permissions&&j.permissions.push?' (écriture ✓)':' (écriture ? vérifier la permission Contents)'), 'ok'); }
-    else arcStatus('jeton refusé : HTTP '+r.status, 'bad'); }
-  catch (e) { arcStatus('test impossible : '+e.message, 'bad'); }
+  const H = { 'Authorization':'Bearer '+tok, 'Accept':'application/vnd.github+json', 'X-GitHub-Api-Version':'2022-11-28' };
+  arcStatus('test lecture…');
+  try {
+    const r = await fetch(GH_API+'/repos/'+ARC_REPO, { headers:H });
+    if (!r.ok) { arcStatus('lecture refusée : HTTP '+r.status+(r.status===404?' — dépôt invisible pour ce jeton (syklo-logs coché dans « Repository access » ?)':''), 'bad'); return; }
+    arcStatus('lecture OK — test écriture…');
+    const w = await fetch(GH_API+'/repos/'+ARC_REPO+'/git/blobs', { method:'POST', headers:{...H, 'Content-Type':'application/json'},
+      body: JSON.stringify({ content:'test ecriture dashboard '+new Date().toISOString(), encoding:'utf-8' }) });
+    if (w.status === 201) { arcStatus('jeton OK — lecture ✓ écriture ✓ ('+ARC_REPO+')', 'ok'); arcFlush(true); return; }
+    arcStatus('lecture ✓ mais ÉCRITURE REFUSÉE (HTTP '+w.status+') : sur GitHub → Settings → Developer settings → Fine-grained tokens → ce jeton → Edit → '
+      + 'Repository permissions → « Contents : Read and write » (dépôt syklo-logs sélectionné) → Update, puis « Tester » à nouveau', 'bad');
+  } catch (e) { arcStatus('test impossible : '+e.message, 'bad'); }
 };
 $('btnArcFlush').onclick = () => arcFlush(false);
 for (const k of ARC_FIELDS) $(k).addEventListener('change', arcSave);
-$('arcId').addEventListener('input', arcSummary);
+$('arcId').addEventListener('input', arcSave);
 arcLoad(); arcQueueUi();
 addEventListener('online', () => arcFlush(true));
 function stats(key) {
