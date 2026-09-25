@@ -327,6 +327,11 @@ La chaîne d'entrée (capteur de couple → loi des niveaux → régulation). R�
 
 Comparable uniquement à conditions égales (firmware moteur, preset display, street, batterie).
 
+**Reconnexions automatiques** : display SW102, BMS JBD et, depuis le 2026-09-25, **home trainer**
+(avant, seul l'affichage était remis à zéro). En cas de coupure, 5 essais sans sélecteur ; au retour, les
+données puissance/vitesse sont réabonnées, le contrôle FTMS est repris et, si un run de la phase S
+tourne, la **charge du palier en cours est réappliquée**. Journal des liaisons en bas du panneau banc.
+
 **Jeton d'archivage (corrigé le 2026-09-25)** : il est rangé **par adresse de page** (stockage
 local du navigateur). Celui saisi sur `syklofr.github.io` n'existe pas pour `localhost:8765`, et
 inversement : il faut le saisir **une fois sur chaque adresse**. Il s'enregistre désormais **dès le

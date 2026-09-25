@@ -1104,6 +1104,65 @@ function onTrainer(parser) {
   };
 }
 
+/* RECONNEXION AUTOMATIQUE DU TRAINER (2026-09-25) : le display et le BMS se reconnectaient seuls,
+   pas le trainer (l'événement de déconnexion ne faisait que vider l'affichage) → pmeca perdu en plein
+   run. Même mécanique : on garde l'objet appareil et on rappelle gatt.connect() sans sélecteur
+   (5 essais), on réabonne puissance + vitesse, on reprend le contrôle FTMS et, si un run de la
+   phase S est en cours, on RÉAPPLIQUE la charge du palier (le trainer l'a perdue). Gestionnaires
+   nommés : un réabonnement ne les double pas. */
+let trainerManual = false, trainerReconnecting = false;
+const trainerOnCps = onTrainer(parseCPS), trainerOnFtms = onTrainer(parseFTMS);
+async function trainerSetup(dev){
+  const gatt = await dev.gatt.connect();
+  trainerGatt = gatt;
+  let svc, ch, kind, cps = true;
+  try {
+    svc = await gatt.getPrimaryService(CPS_SVC);
+    ch  = await svc.getCharacteristic(CPS_MEAS);
+    kind = 'Cycling Power';
+  } catch (_) {
+    svc = await gatt.getPrimaryService(FTMS_SVC);
+    ch  = await svc.getCharacteristic(FTMS_BIKE);
+    kind = 'FTMS'; cps = false;
+  }
+  await ch.startNotifications();
+  ch.addEventListener('characteristicvaluechanged', cps ? trainerOnCps : trainerOnFtms);
+  if (!cps) ch.addEventListener('characteristicvaluechanged', onTrainerBike);
+  else try { const fs = await gatt.getPrimaryService(FTMS_SVC), fc = await fs.getCharacteristic(FTMS_BIKE);
+             await fc.startNotifications(); fc.addEventListener('characteristicvaluechanged', onTrainerBike); } catch (_) {}
+  $('vTrainerSrc').textContent = (dev.name || 'trainer') + ' · ' + kind;
+  $('btnTrainer').textContent = (dev.name || 'Trainer') + ' connecté';
+  $('btnTrainer').className = 'sec ok';
+  // controle de resistance : tente FTMS meme si les donnees passent par CPS
+  const ok = await acquireFtmsControl();
+  if (ok) {
+    $('vTrainerSrc').textContent += ' · ctrl';
+    // run de la phase S en cours : le trainer a perdu sa consigne → on la réapplique
+    if (proto && proto.phase === 'S') { const st = proto.steps[proto.idx]; sApplyTrainer(st && st.kind === 'plateau' ? st : undefined); }
+  }
+}
+async function trainerOnDisconnect(){
+  $('vPmeca').textContent = '–'; $('vRatio').textContent = '–'; pmeca = null; ftmsCtrl = null; trainerGatt = null;
+  if (trainerManual || !trainerDev) {
+    $('vTrainerSrc').textContent = 'déconnecté';
+    $('btnTrainer').textContent = 'Connecter home trainer'; $('btnTrainer').className = 'sec';
+    return;
+  }
+  if (trainerReconnecting) return;
+  trainerReconnecting = true;
+  linkLog('trainer : déconnexion (événement GATT)');
+  try {
+    for (let i = 1; i <= 5 && trainerDev && !trainerManual; i++) {
+      $('btnTrainer').textContent = 'Trainer : reconnexion '+i+'/5…'; $('btnTrainer').className = 'sec busy';
+      $('vTrainerSrc').textContent = 'reconnexion '+i+'/5…';
+      await new Promise(r => setTimeout(r, 1500 * i));
+      try { await trainerSetup(trainerDev); linkLog('trainer reconnecté (essai '+i+')'); return; } catch (_) {}
+    }
+    $('vTrainerSrc').textContent = 'perdu (5 essais) — reconnectez-le (bouton)';
+    $('btnTrainer').textContent = 'Connecter home trainer'; $('btnTrainer').className = 'sec';
+    linkLog('trainer perdu après 5 essais');
+  } finally { trainerReconnecting = false; }
+}
 $('btnTrainer').onclick = async () => {
   try {
     $('vTrainerSrc').textContent = 'recherche…';
@@ -1112,34 +1171,10 @@ $('btnTrainer').onclick = async () => {
       filters: [{ services:[CPS_SVC] }, { services:[FTMS_SVC] }],
       optionalServices: [CPS_SVC, FTMS_SVC]
     });
-    trainerDev = dev;
-    dev.addEventListener('gattserverdisconnected', () => {
-      $('vTrainerSrc').textContent = 'déconnecté';
-      $('btnTrainer').textContent = 'Connecter home trainer'; $('btnTrainer').className = 'sec';
-      $('vPmeca').textContent = '–'; $('vRatio').textContent = '–'; pmeca = null;
-    });
-    const gatt = await dev.gatt.connect();
-    trainerGatt = gatt;
-    let svc, ch, parser, kind;
-    try {
-      svc = await gatt.getPrimaryService(CPS_SVC);
-      ch  = await svc.getCharacteristic(CPS_MEAS);
-      parser = parseCPS; kind = 'Cycling Power';
-    } catch (_) {
-      svc = await gatt.getPrimaryService(FTMS_SVC);
-      ch  = await svc.getCharacteristic(FTMS_BIKE);
-      parser = parseFTMS; kind = 'FTMS';
-    }
-    await ch.startNotifications();
-    ch.addEventListener('characteristicvaluechanged', onTrainer(parser));
-    if (parser === parseFTMS) ch.addEventListener('characteristicvaluechanged', onTrainerBike);
-    else try { const fs = await gatt.getPrimaryService(FTMS_SVC), fc = await fs.getCharacteristic(FTMS_BIKE);
-               await fc.startNotifications(); fc.addEventListener('characteristicvaluechanged', onTrainerBike); } catch (_) {}
-    $('vTrainerSrc').textContent = (dev.name || 'trainer') + ' · ' + kind;
-    $('btnTrainer').textContent = (dev.name || 'Trainer') + ' connecté';
-    $('btnTrainer').className = 'sec ok';
-    // controle de resistance : tente FTMS meme si les donnees passent par CPS
-    acquireFtmsControl().then(ok=>{ if(ok) $('vTrainerSrc').textContent += ' · ctrl'; });
+    if (trainerDev && trainerDev !== dev) trainerDev.removeEventListener('gattserverdisconnected', trainerOnDisconnect);
+    trainerDev = dev; trainerManual = false;
+    dev.addEventListener('gattserverdisconnected', trainerOnDisconnect);
+    await trainerSetup(dev);
   } catch (e) {
     $('vTrainerSrc').textContent = 'erreur : ' + e.message;
     $('btnTrainer').textContent = 'Connecter home trainer'; $('btnTrainer').className = 'sec';
@@ -1222,7 +1257,7 @@ async function bmsOnDisconnect(ev){
    parfois le lien du BMS JBD ouvert : le BMS n'émet plus et n'apparaît plus dans le sélecteur
    (constaté le 2026-09-24 — seul remède alors : Bluetooth du PC off/on). */
 addEventListener('pagehide', ()=>{
-  bmsManual=true;
+  bmsManual=true; trainerManual=true;
   for(const d of [bmsDev, sw102Dev, trainerDev]) try{ if(d && d.gatt && d.gatt.connected) d.gatt.disconnect(); }catch(_){}
 });
 $('btnBms').onclick=async()=>{
@@ -1265,6 +1300,11 @@ let aweOn = false;   // lu du paquet 0x02, jamais ecrit
 const FTMS_CP='00002ad9-0000-1000-8000-00805f9b34fb', FTMS_RANGE='00002ad6-0000-1000-8000-00805f9b34fb';
 let trainerGatt=null, ftmsCtrl=null, ftmsResRange=null;
 
+function ftmsCpOnNotify(e){
+  const dv=e.target.value;
+  if(dv.byteLength>=3 && dv.getUint8(0)===0x80 && dv.getUint8(2)!==0x01 && !/cmd refusée/.test($('vTrainerSrc').textContent))
+    $('vTrainerSrc').textContent += ' · cmd refusée';
+}
 async function acquireFtmsControl(){
   if(!trainerGatt) return false;
   try{
@@ -1273,11 +1313,7 @@ async function acquireFtmsControl(){
          ftmsResRange={min:dv.getInt16(0,true)/10, max:dv.getInt16(2,true)/10}; }catch(_){}
     ftmsCtrl=await svc.getCharacteristic(FTMS_CP);
     await ftmsCtrl.startNotifications();
-    ftmsCtrl.addEventListener('characteristicvaluechanged', e=>{
-      const dv=e.target.value;
-      if(dv.byteLength>=3 && dv.getUint8(0)===0x80 && dv.getUint8(2)!==0x01)
-        $('vTrainerSrc').textContent += ' · cmd refusée';
-    });
+    ftmsCtrl.addEventListener('characteristicvaluechanged', ftmsCpOnNotify);
     await ftmsCtrl.writeValue(Uint8Array.of(0x00));
     try{ await ftmsCtrl.writeValue(Uint8Array.of(0x07)); }catch(_){ }
     return true;
