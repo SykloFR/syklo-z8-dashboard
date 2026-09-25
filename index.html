@@ -211,7 +211,7 @@
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
       <label class="sp" title="vitesses des paliers assistés (et du L0 de contrôle en fin de séance : la 1re)">paliers km/h <input id="sSpeeds" size="8" value="20,14"></label>
       <label class="sp" id="sErgLbl" title="étalonnage L0 : résistances trainer en % à vitesse fixe (stable, la charge suit la vitesse). Suffixe W = ERG (ex. 150W) — déconseillé à basse cadence (spirale)">charges L0 <input id="sErgs" size="10" value="40,70,100"> % à <input id="sCalSpeeds" size="4" value="20"> km/h</label>
-      <label class="sp" id="sLoiLbl" title="mode loi : niveaux, charges (r40 = résistance 40 %, g5 = pente 5 %, 150w = ERG) et vitesses — un palier par combinaison, débridé (street OFF) pour dépasser 25 km/h">loi : niv. <input id="sLoiLvls" size="5" value="1,2,3"> charges <input id="sLoiLoads" size="10" value="r70,r100"> à <input id="sLoiSpeeds" size="7" value="20,28,36"> km/h</label>
+      <label class="sp" id="sLoiLbl" title="mode loi : niveaux, charges (r40 = résistance 40 %, g5 = pente 5 %, 150w = ERG) et vitesses — un palier par combinaison, débridé (street OFF) pour dépasser 25 km/h">loi : niv. <input id="sLoiLvls" size="5" value="1,2,3"> charges <input id="sLoiLoads" size="13" value="200w,400w,600w"> à <input id="sLoiSpeeds" size="7" value="20,28"> km/h</label>
       <label class="sp">braquet <input id="sChainring" size="2" value="44"> / <input id="sCog" size="2" value="14"></label>
       <label class="sp" title="circonférence RÉGLÉE AU DISPLAY (pas celle du pneu) : convertit la vitesse affichée en cadence. Banc Syklo : 2300 (vérifié : cad/v = 2,30 rpm par km/h sous OSF)">circ. mm <input id="sCirc" size="4" value="2300"></label>
       <label class="sp" title="traversée de la coupure street en ESCALIER 22→27 km/h, au niveau 2 (au niveau 5 le gain est trop fort pour monter palier par palier)"><input type="checkbox" id="sCut"> + coupure (L2, escalier 22→27)</label>
@@ -827,6 +827,8 @@ function handle04(dv) {
     if (trPrevK && Math.abs(d.spdX10/10-trPrevK.d) < 0.4 && Math.abs(trSpd-trPrevK.t) < 0.4) trK += 0.02*(trSpd/(d.spdX10/10) - trK);
     trPrevK = { d:d.spdX10/10, t:trSpd };
   }
+  if (spdPrevX10 !== null && d.spdX10 !== spdPrevX10) spdChg.push(now);
+  spdPrevX10 = d.spdX10;
   lastSpdX10 = d.spdX10; lastVoltX10 = d.voltX10; lastTorque = d.torque; lastCur = d.cur;
   // cadence estimée depuis la vitesse et le braquet (phase S) : seule cadence disponible en stock,
   // et sous OSF un contrôle du braquet saisi (doit coller à `cad` à ±5 %)
@@ -1047,6 +1049,11 @@ let trSpd = null, trCad = null, trT = 0;
    Rapport réappris en continu, seulement quand les deux vitesses sont stables (le display est
    faux en transitoire : 41,8 km/h affichés pour 5,9 réels au décollage, figé à l'arrêt). */
 let trK = 0.917, trPrevK = null;
+/* SIGNAL VITESSE (2026-09-25) : au run loi du matin, la vitesse du display ne se mettait plus à jour
+   que 0,3 fois/s (1,6-2,1 la veille) et l'assistance coupait / ne reprenait plus. Suivi en direct :
+   nombre de changements de la vitesse display sur 5 s, quand le trainer roule (> 10 km/h). */
+let spdChg = [], spdPrevX10 = null;
+function spdSignal(now){ spdChg = spdChg.filter(t => now - t < 5000); return spdChg.length / 5; }
 const vEq = () => (trT && Date.now()-trT < 1500 && trSpd != null) ? trSpd/trK : null;   // km/h, échelle display
 const vBest = () => vEq() ?? lastSpdX10/10;
 function onTrainerBike(e) {
@@ -2541,9 +2548,9 @@ $('btnProtoRedo').onclick=()=>{ const p=proto; if(!p) return;
    Mode « séance » : étalonnage L0 → L1…L5 → L0 de contrôle en UN run (~12 min pédalés) ;
    chaque étape « niveau » attend le display : c'est la pause de l'opérateur.
 --------------------------------------------------------------------------- */
-const S_KEY='protoS.v5';
+const S_KEY='protoS.v6';
 const S_DEF={mode:'seance', speeds:'20,14', ergs:'40,70,100', calSpeeds:'20', chainring:44, cog:14, circ:2300, band:1.5, stable:20, max:90, cut:false,
-             loiLvls:'1,2,3', loiLoads:'r70,r100', loiSpeeds:'20,28,36'};
+             loiLvls:'1,2,3', loiLoads:'200w,400w,600w', loiSpeeds:'20,28'};
 /* DYNAMIQUE (2026-09-24, après la séance 2 : départ arrêté L5 = 40 A phase / ~900 W batterie en
    1 s, 0 → 39 km/h ; coupure franche vers 26-27 km/h avec pic au réengagement) — la loi statique
    (gain par niveau) ne dit rien de la BRUTALITÉ ressentie. Deux gestes courts par niveau :
@@ -2614,7 +2621,9 @@ function sPlateau(lvl, v, p, c){
   return {id:'S-L'+lvl+(c?sChargeTok(c):'')+'-v'+v, kind:'plateau', lvl, vT:v,
     erg:c&&c.erg||null, res:c&&c.res||null, grade:c&&c.grade||null, dur:p.stable,
     title:(c?(lvl===0?'Étalonnage L0 — ':'Niveau '+lvl+' — ')+lab+' à ':'Niveau '+lvl+' — palier ')+v+' km/h',
-    instr:(c?(c.erg?'Le trainer impose <b>'+c.erg+' W</b> (ERG : restez dans le HAUT de la bande, si la cadence baisse il durcit). ':'Le trainer passe en <b>'+lab+'</b>. ')
+    instr:(c?(c.erg?(lvl===0?'Le trainer impose <b>'+c.erg+' W</b> (ERG : restez dans le HAUT de la bande, si la cadence baisse il durcit). '
+                             :'Le trainer impose <b>'+c.erg+' W</b> à la roue (ERG) : moteur + vous = '+c.erg+' W quelle que soit la vitesse. Tenez la vitesse par la CADENCE : si ça accélère, allégez tout de suite (l’assistance amplifie). ')
+                :'Le trainer passe en <b>'+lab+'</b>. ')
             +(lvl===0?'Sans assistance, la puissance roue est 100 % la vôtre. ':''):'')
       +'Tenez <b>'+v+' km/h</b> (±'+p.band+' km/h ≈ '+cadEst(v*10).toFixed(0)+' rpm) : seul le temps DANS la bande compte, il se cumule ('+p.stable+' s), sortir ne remet rien à zéro. Assis, régulier ; ne touchez pas au niveau.'
       +(c?' Trop dur ? « Étape suivante ».':'')};
@@ -2652,7 +2661,7 @@ function buildProtoS(lvl, p){
        firmware → on balaie les charges à vitesse fixe (forme de la loi à cadence fixe) et deux
        vitesses (dépendance à la cadence). Ancre L0 (résistance 70 % à 20 km/h) = contrôle de dérive
        de l'étalonnage du couple (fait en séance). Débridé : au-delà de 25 km/h pour charger fort. */
-    const steps=[sLevelStep(0), sPlateau(0, 20, p, {res:70})];
+    const steps=[sLevelStep(0), sPlateau(0, 20, p, {erg:150})];   // ancre L0 : ERG 150 W (sans moteur l'ERG est stable)
     const loads=sCharges(p.loiLoads), sp=numList(p.loiSpeeds);
     for(const l of numList(p.loiLvls).filter(l=>l>=1&&l<=5)){
       steps.push(sLevelStep(l, true));
@@ -2925,6 +2934,9 @@ function protoTickS(){
   const cad=$('pCad'); cad.hidden=false; cad.style.background='#2a3340'; cad.style.color='var(--tx)';
   cad.textContent='cad≈'+cadEst(lastSpdX10).toFixed(0)+' rpm · couple '+lastTorque+' · cur '+lastCur
     +(pmeca!=null?' · roue '+pmeca+' W':' · roue –')+(bms&&now-bms.t<3000?' · batt '+bms.p.toFixed(0)+' W':p.bmsAtStart?' · ⚠ BMS MUET':'');
+  { const ve=vEq(), sg=spdSignal(now);   // signal vitesse : seulement quand le trainer roule franchement
+    if(ve!=null && ve>10){ cad.textContent+=' · vitesse display '+sg.toFixed(1)+' màj/s';
+      if(sg<0.8){ cad.style.background='#7a1f1c'; cad.textContent+='  ⚠ SIGNAL VITESSE FAIBLE (capteur/aimant ?)'; } } }
   const done=p.results.filter(r=>r.kind==='plateau').length, tot=p.steps.filter(x=>x.kind==='plateau').length;
   $('pTotLeft').textContent=done+' / '+tot+' paliers';
   $('pBarTot').style.width=Math.min(100,p.idx/p.steps.length*100)+'%';

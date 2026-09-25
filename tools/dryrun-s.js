@@ -113,7 +113,7 @@ const T0 = NOW;
 (async () => {
   ctx("bmsDev = {name:'SIM'}");
   await advance(3000);
-  ctx("$('sLoiLvls').value='1,2,3,4,5'; $('sLoiLoads').value='r70,r100'; $('sLoiSpeeds').value='20,28,36';");
+  ctx("$('sLoiLvls').value='1,2,3,4,5'; $('sLoiLoads').value='200w,400w,600w'; $('sLoiSpeeds').value='20,28';");
   ctx("$('sMode').value='"+MODE+"'; $('sSpeeds').value='20,14'; $('sErgs').value='40,70,100'; $('sCalSpeeds').value='20'; $('sChainring').value='44'; $('sCog').value='14'; $('sCirc').value='2300'; $('sCut').checked=true;");
   ctx('startProtoS()');
   let guard = 0;

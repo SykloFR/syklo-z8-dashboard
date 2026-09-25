@@ -223,6 +223,13 @@ def main(argv):
                     lv, f(ib, 1), cap, ('  (%+.0f %%)' % ((ib / cap - 1) * 100)) if ib else '',
                     f(kr / GEAR_ASSIST[lv - 1], 2) if kr is not None else '–', f(rp, 1),
                     '  ⚠ plafond atteint : k mesure le plafond, pas le gain' if rp and rp > 0.9 * cap else ''))
+        mv = [(a, b) for a, b in zip(R, R[1:]) if spd(a) > 10 and b['t'] - a['t'] < 1000]
+        dur = sum((b['t'] - a['t']) / 1000 for a, b in mv)
+        chg = sum(1 for a, b in mv if b.get('spdX10') != a.get('spdX10'))
+        if dur > 20:
+            rate = chg / dur
+            print('\n  signal vitesse display : %.2f mise(s) à jour/s en roulant%s' % (
+                rate, '  ⚠ FAIBLE (≈ 1,6-2,1 normalement) : impulsions perdues → le stock coupe l’assistance' if rate < 0.8 else ''))
         streets = sorted(set(r.get('street') for r in R if r.get('street') is not None))
         print('\n  street : %s ; échelle trainer/display = %.3f' % ({(0,): 'OFF (débridé)', (1,): 'ON', (0, 1): 'ON puis OFF (mixte)'}.get(tuple(streets), str(streets)), K_TR))
         if not (L or A or P or C or RE):
