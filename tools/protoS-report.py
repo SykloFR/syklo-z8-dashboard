@@ -71,7 +71,10 @@ def plateaus_from_lines(rows, meta):
         spd = med([x.get('spdX10') for x in ss])
         if spd is None:
             continue
-        out[stp] = dict(stp=stp, n=len(ss), spd=spd / 10, cadEst=cad_est(spd / 10, gear),
+        # tcad = cadence mesurée (Elite Rivo). Retenue sur les seuls échantillons où le cycliste
+        # pousse : en roue libre le trainer garde sa dernière valeur (constaté le 2026-10-02).
+        tcad = med([x.get('tcad') for x in ss if x.get('tcad') and (x.get('cur', 0) > 5 or x.get('torque', 0) > 95)])
+        out[stp] = dict(stp=stp, n=len(ss), spd=spd / 10, cadEst=cad_est(spd / 10, gear), tcad=tcad,
                         torque=med([x.get('torque') for x in ss]), cur=med([x.get('cur') for x in ss]),
                         pmeca=med([x.get('pmeca') for x in ss]), pbat=med([x.get('pbat') for x in ss]),
                         vbat=med([x.get('vbat') for x in ss]), cad=med([x.get('cad') for x in ss]),
@@ -81,6 +84,7 @@ def plateaus_from_lines(rows, meta):
             m = r.get('med')
             if r.get('kind') == 'plateau' and m and m.get('spd') is not None:
                 out[r['id']] = dict(stp=r['id'], n=m.get('n'), spd=m['spd'], cadEst=m.get('cadEst') or cad_est(m['spd'], gear),
+                                    tcad=m.get('tcad'),
                                     torque=m.get('torque'), cur=m.get('cur'), pmeca=m.get('pmeca'), pbat=m.get('pbat'),
                                     vbat=m.get('vbat'), cad=m.get('cad'), volt=m.get('volt'), lvl=r.get('lvl'))
     return out
@@ -234,12 +238,15 @@ def main(argv):
             ml = re.match(r'S-L(\d)', stp)
             lvl = int(ml.group(1)) if ml else int(meta.get('lvl') or m.get('lvl') or 0)
             me, mr, mg = re.search(r'-e(\d+)-', stp), re.search(r'-r(\d+)-', stp), re.search(r'-g(\d+(?:\.\d+)?)-', stp)
+            mp = re.search(r'-p(\d+)-', stp)      # charge exprimée en PUISSANCE PÉDALE visée (ERG résolu par niveau)
             erg = float(me.group(1)) if me else None
             res = int(mr.group(1)) if mr else None
             grade = float(mg.group(1)) if mg else None
-            charge = ('ERG %g W' % erg) if erg else ('res %d' % res) if res else ('pente %g %%' % grade) if grade else grid_charge
+            ped = float(mp.group(1)) if mp else None
+            charge = ('%g W pédale visés' % ped) if ped else ('ERG %g W' % erg) if erg else ('res %d' % res) \
+                     if res else ('pente %g %%' % grade) if grade else grid_charge
             m.update(file=os.path.basename(f), id=meta.get('id'), fw=proto, motorFw=meta.get('motorFw'),
-                     day=(meta.get('ts') or '')[:10], lvl=lvl, vT=vT, erg=erg,
+                     day=(meta.get('ts') or '')[:10], lvl=lvl, vT=vT, erg=(erg if erg else ped),
                      trainer=json.dumps(tr), charge=charge, street=meta.get('street'))
             runs.append(m)
         for r in (meta.get('results') or []):

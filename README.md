@@ -81,7 +81,8 @@ Ajoute deux tuiles :
 
 Panneau **« Home trainer — pilotage manuel »** (hors protocole guidé) : résistance
 directe (%), pente simulée (%) ou puissance cible ERG (W), plus le bouton
-**« Charge max »** = ERG 600 W (plafond du Van Rysel D100). ⚠ « Résistance 100 % »
+**« Charge max »** = ERG 600 W (plafond du Van Rysel D100 ; **l'Elite Rivo installé le
+2026-10-02 tient plus de 1 000 W** — valeur à relever quand le besoin s'en fera sentir). ⚠ « Résistance 100 % »
 n'est **pas** la charge maximale : c'est le niveau 10 d'une courbe qui suit la
 vitesse (~11 W/km/h, presque rien à l'arrêt) — vu le 2026-09-17, le volant
 s'emballait à 45-49 km/h en 1 s sur des départs L5. En ERG, le trainer doit tenir
@@ -346,6 +347,25 @@ OSF). **Aucun mode banc, aucune trame envoyée au display** : c'est l'opérateur
 piloté. Spec : `chantier-z8-osf/specs/protocole-S-caracterisation-stock.md` (**v4** du
 2026-09-24, section en tête — la v3 s'est révélée intenable au 1er banc réel).
 
+**v5 du 2026-10-02 — Elite Rivo + braquet 44/11.** Le banc a changé deux fois ; plan de campagne
+complet : `chantier-z8-osf/specs/plan-campagne-rivo.md`.
+- **Rivo** : > 1 000 W tenus (1 064 W batterie / 23,5 A au BMS), là où le D100 saturait vers
+  600 W. Ça débloque la zone **100-200 W pédale**, celle de la certification.
+- **44/11** (cassette 11-41 bloquée sur le petit pignon) : à cadence égale la roue tourne
+  **1,27 fois plus vite** → **1,81 rpm par km/h display**. Les cibles de vitesse sont relevées
+  pour garder les cadences des séances D100 : séance **25 et 18 km/h** (45 et 33 rpm), loi
+  **25 et 36**, départ **25**, reprises **20**. L'escalier de coupure reste 22→27 (vitesse absolue).
+- **Street OFF pour toute la campagne sauf le run de coupure** (25 km/h display = la coupure), et
+  **`Max speed` du display au maximum** (sinon l'assistance coupe vers 30 km/h).
+- **Cadence MESURÉE** : le Rivo diffuse `tcad` (FTMS), fidèle à 2 % en pédalage actif — mais
+  **fausse en roue libre** (le trainer garde sa dernière valeur), donc retenue seulement quand le
+  cycliste pousse. Elle sert de **contrôle croisé du braquet** : écart > 10 % avec la cadence
+  calculée → palier en ATTENTION (pignon ou circonférence mal saisis).
+- **Charges en puissance pédale visée** : `150p` = 150 W pédale, converti en ERG selon le Gear
+  assist du niveau (`ERG = P × (1 + 3,28 × GA)`). 150 W pédale en L5 = **840 W à la roue**.
+- **Garde-fou plafond** : un palier qui atteint `Gear_current × 23 A` mesure le plafond du niveau,
+  pas la loi → ATTENTION (atteint vers 187 W pédale en L5).
+
 **v4 en bref** : mode **séance** par défaut, soit un seul run d'environ 12 min pédalées.
 Étalonnage L0 à 20 km/h en **résistance 40 / 70 / 100 %** (plus d'ERG : il part en
 spirale à basse cadence), puis L1→L5 à la charge du panneau (résistance 100 %) sur les
@@ -357,15 +377,17 @@ Fichier `…_banc-protoS-seance.jsonl`. Les modes « un niveau » et « étalonn
 servent à refaire un morceau. Rodage à blanc : `node tools/dryrun-s.js index.html sortie.jsonl [seance|dyn]`.
 
 **Circonférence = celle RÉGLÉE AU DISPLAY** (banc Syklo : **2 300 mm**, vérifié sur les runs OSF :
-cad/v = 2,30 rpm par km/h en 44/14). Les runs du 2026-09-24 matin portent 2 050 : dépouiller avec
+cad/v = 2,30 rpm par km/h en 44/14 ; **2,30 → 1,81 depuis le passage en 44/11**). Les runs du
+2026-09-24 matin portent 2 050 : dépouiller avec
 `--circ 2300`. Une erreur de circonférence fausse les N·m et les rpm, **pas** les gains ni `pbat`.
 
 **Mode loi : charge × vitesse** (2026-09-24 soir). Il sert à extraire la loi du stock sur toute
 la plage de puissance pédale. Au labo, le même firmware passait à 100 W pédale et échouait à
 150 W ; au banc maison, la loi est linéaire entre 20 et 80 W. À l'équilibre, ta puissance pédale
 est imposée par la charge, la vitesse et la loi : on balaie donc les **charges** (`r40,r100,g5` =
-résistance 40 %, 100 %, pente 5 % ; le D100 accepte la pente, vérifié en FTMS) aux **vitesses**
-20 et 30 km/h, sur les **niveaux** choisis (`1,2,3` puis `4,5`). Le run commence par une ancre L0
+résistance 40 %, 100 %, pente 5 % ; `150w` = ERG ; **`150p` = 150 W pédale visés**, converti en
+ERG selon le Gear assist du niveau) aux **vitesses** 25 et 36 km/h, sur les **niveaux** choisis
+(`1,2,3` puis `4,5`). Le run commence par une ancre L0
 (résistance 70 % à 20 km/h, contrôle de dérive de l'étalonnage fait en séance). Il se fait **en
 débridé** (street OFF) pour dépasser 25 km/h ; confirmation demandée si street est ON. Fichier
 `…_banc-protoS-loi.jsonl`. Le dépouillement `protoS-report.py` (avec les séances, qui portent
@@ -402,12 +424,12 @@ Principe : à **charge figée** (consigne du panneau « Home trainer », résist
 série 1 — jamais ERG pour les niveaux assistés, la vitesse s'emballerait) et à vitesse
 égale, la puissance roue `pmeca` est la même quel que soit le niveau : seul le partage
 cycliste/moteur change. La **vitesse** est la grandeur pilote : à braquet fixe elle vaut
-exactement une cadence (`cadEst`, tuile « Cadence estimée » — 44/14 × 2 300 mm (réglage du
-display) → 2,306 rpm par km/h : 14 km/h = 32, 20 = 46, 25 = 58 rpm).
+exactement une cadence — et depuis le Rivo elle est **mesurée** (`tcad`). En **44/11** ×
+2 300 mm (réglage du display) : **1,81 rpm par km/h** → 18 km/h = 33, 25 = 45, 36 = 65 rpm.
 
 | Mode | Étapes | Ce qu'on obtient |
 |---|---|---|
-| **Séance** (défaut) | L0 : 20 km/h × résistance 40 / 70 / 100 % → L1…L5 : paliers 20 et 14 km/h à la charge du panneau → coupure 20 → 26 km/h en L5 (option) → L0 de contrôle | tout d'un coup, ~12 min pédalées ; chaque étape « niveau X » attend le display = pause |
+| **Séance** (défaut) | L0 : 25 km/h × résistance 40 / 70 / 100 % → L1…L5 : paliers 25 et 18 km/h à la charge du panneau → coupure en escalier (option) → L0 de contrôle | tout d'un coup, ~12 min pédalées ; chaque étape « niveau X » attend le display = pause |
 | **Un niveau** | étape « niveau X au display » puis les paliers de la liste ; option coupure | refaire un niveau |
 | **Étalonnage L0 seul** | L0, charges du champ (résistance %, ou `150W` = ERG) à la vitesse du champ | à L0 pmeca = 100 % cycliste → couple T = P/ω connu → **étalonnage `torque` ADC ↔ N·m** (à charge fixe unique le couple L0 serait le même à toutes les vitesses : d'où plusieurs résistances) |
 
@@ -421,7 +443,7 @@ Garde-fous : télémétrie, banc désarmé, trainer (pmeca) et contrôle FTMS, E
 étalonnage, grille ≠ résistance 100 %, pack < 43 V, **stock sans BMS** (pas de pbat),
 AWE sous OSF.
 
-Campagne : street **ON** (comme vendu), charge et braquet figés, **2 séances courtes**
+Campagne : street **OFF** depuis le 44/11 (sauf le run de coupure), charge et braquet figés, **2 séances courtes**
 (jours, états de charge) ; CV(pbat) et CV(pmeca) < 10 % par palier = base validée, sinon
 3ᵉ séance ou run long. Fichier `…_banc-protoS-seance.jsonl` (ou `-L<n>`, `-L0-calib`),
 `stp` = palier (`S-L0-r70-v20` = résistance 70 %, `S-L3-v14`), `stb` = 1 sur les
@@ -431,8 +453,8 @@ Dépouillement : `python tools/protoS-report.py <dossier ou fichiers>` (`--id`, 
 étalonnage sur tous les L0, puis par charge et par niveau × vitesse : P_cycliste,
 **P_assist = pmeca − P_cycliste**, gain, `cur`, `pbat`, η, dispersion inter-runs,
 coupures. Équivalence stock ↔ OSF = mêmes paliers, même charge → même P_assist (ou pbat).
-Sous OSF `cur` redevient le courant batterie et `cad` réel doit coller à `cadEst` (contrôle
-du braquet saisi).
+Sous OSF `cur` redevient le courant batterie et `cad` réel doit coller à `tcad` / `cadEst`
+(contrôle du braquet saisi).
 
 ### Phase R — cycle capteurs RD45, roue en l'air (stock + patch speedfix, ~5 min)
 

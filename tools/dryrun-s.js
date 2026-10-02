@@ -54,7 +54,8 @@ sandbox.__ftms = { writeValue: async f => { f=[...f];
   else if(f[0]===0x11){ TR.grade=((f[3]|(f[4]<<8))<<16>>16)/100; TR.erg=null; } } };
 ctx('ftmsCtrl = __ftms; trainerDev = {}; ftmsResRange = null;');
 let lvl = 0, seq = 0, vTarget = 0, spd = 0, noiseT = 0;
-const cad = v => v/3.6/2.30*60*14/44;
+const COG = 11;                                   // 44/11 depuis le 2026-10-02 (cassette Rivo, petit pignon)
+const cad = v => v/3.6/2.30*60*COG/44;
 let cutOn = false, surgeUntil = 0;
 function state(){
   const pm = TR.erg!=null ? TR.erg : TR.grade!=null ? spd*(3.5+1.7*TR.grade) : 11*(0.15+0.85*TR.res/100)*spd;
@@ -77,6 +78,9 @@ function push04(){
   dv.setUint8(19,0x12);                            // src : stock (2), preset Z8 48V
   ctx('onNotify')({target:{value:dv}});
   ctx('pmeca = '+Math.round(s.pm)+'; trSpd = '+(spd*0.917).toFixed(2)+'; trT = '+NOW);
+  // cadence diffusee par le Rivo : mesure reelle quand on pedale, valeur figee en roue libre
+  const pedale = s.T > 2 && spd > 1;
+  ctx('trCad = '+(pedale ? Math.round(cad(spd)) : 'trCad'));
   if(BMS_ON) ctx(`bms = {v:50.2, i:${(s.pbat/50.2).toFixed(2)}, p:${s.pbat.toFixed(1)}, soc:68, t:${NOW}}`);
 }
 function push01(){ const dv=new DataView(new ArrayBuffer(19)); dv.setUint8(0,0x01); dv.setUint8(16,1+1); dv.setUint8(17,lvl+1); dv.setUint8(18,25+1); ctx('onNotify')({target:{value:dv}}); }
@@ -91,8 +95,9 @@ function human(){
   if(st.kind==='level'){ if(NOW % 4000 === 0) lvl = st.lvl; vTarget = 12; return; }   // change de niveau apres une pause
   if(st.kind==='plateau') vTarget = st.vT;
   if(st.kind==='sweep'){ STREET = 1; const el=(NOW-p.t0)/1000, i=Math.floor(el/5), S=[22,23,24,25,26,27]; vTarget = i<S.length ? S[i] : 0; }
-  if(st.kind==='launch') vTarget = p.sph==='stop' ? 0 : 20 + 4*G[lvl];
-  if(st.kind==='push') vTarget = p.sph==='push' ? 16 + 1 + G[lvl] : 16;
+  const DY = ctx('S_DYN');
+  if(st.kind==='launch') vTarget = p.sph==='stop' ? 0 : DY.launchV + 4*G[lvl];
+  if(st.kind==='push') vTarget = p.sph==='push' ? DY.pushV + 1 + G[lvl] : DY.pushV;
 }
 async function advance(ms){
   for(let t=0;t<ms;t+=100){
@@ -113,15 +118,15 @@ const T0 = NOW;
 (async () => {
   ctx("bmsDev = {name:'SIM'}");
   await advance(3000);
-  ctx("$('sLoiLvls').value='1,2,3,4,5'; $('sLoiLoads').value='200w,400w,600w'; $('sLoiSpeeds').value='20,28';");
-  ctx("$('sMode').value='"+MODE+"'; $('sSpeeds').value='20,14'; $('sErgs').value='40,70,100'; $('sCalSpeeds').value='20'; $('sChainring').value='44'; $('sCog').value='14'; $('sCirc').value='2300'; $('sCut').checked=true;");
+  ctx("$('sLoiLvls').value='1,2,3,4,5'; $('sLoiLoads').value='60p,100p,150p'; $('sLoiSpeeds').value='25,36';");
+  ctx("$('sMode').value='"+MODE+"'; $('sSpeeds').value='25,18'; $('sErgs').value='40,70,100'; $('sCalSpeeds').value='25'; $('sChainring').value='44'; $('sCog').value='"+COG+"'; $('sCirc').value='2300'; $('sCut').checked=true;");
   ctx('startProtoS()');
   let guard = 0;
   while(ctx('proto') && guard++ < 3000){
     await advance(1000);
     const p = ctx('proto');
     // BMS muet 8 s pendant le palier L3-v20 : le palier doit sortir en ATTENTION (pbat absent) seulement s'il ne reste rien
-    if(p && p.curId==='S-L3-v20' && !advance.cut){ advance.cut = NOW; BMS_ON = false; }
+    if(p && p.curId==='S-L3-v25' && !advance.cut){ advance.cut = NOW; BMS_ON = false; }
     if(advance.cut && NOW-advance.cut > 8000){ BMS_ON = true; }
   }
   const L = sandbox.window._lastProto;
