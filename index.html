@@ -210,7 +210,7 @@
       <label class="sp">niveau <select id="sLvl"><option value="auto">courant (display)</option>
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
       <label class="sp" title="vitesses des paliers assistés (et du L0 de contrôle en fin de séance : la 1re)">paliers km/h <input id="sSpeeds" size="8" value="25,18"></label>
-      <label class="sp" id="sErgLbl" title="étalonnage L0 : résistances trainer en % à vitesse fixe (stable, la charge suit la vitesse). Suffixe W = ERG (ex. 150W) — déconseillé à basse cadence (spirale)">charges L0 <input id="sErgs" size="10" value="40,70,100"> % à <input id="sCalSpeeds" size="4" value="25"> km/h</label>
+      <label class="sp" id="sErgLbl" title="étalonnage L0 : trois efforts connus à cadence constante. Depuis l'Elite Rivo, en ERG (suffixe W) : sa courbe de résistance est trop raide pour que les % soient tenables (40 % = 10 km/h au mieux au niveau 0). À 36 km/h on est à 65 rpm, où l'ERG est stable et où 100/150/200 W font 15/22/29 N·m">charges L0 <input id="sErgs" size="12" value="100w,150w,200w"> à <input id="sCalSpeeds" size="4" value="36"> km/h</label>
       <label class="sp" id="sLoiLbl" title="mode loi : niveaux, charges (r40 = résistance 40 %, g5 = pente 5 %, 150w = ERG, <b>150p = 150 W PÉDALE visés</b>, converti en ERG selon le Gear assist du niveau) et vitesses — un palier par combinaison, débridé (street OFF) pour dépasser 25 km/h">loi : niv. <input id="sLoiLvls" size="5" value="1,2,3"> charges <input id="sLoiLoads" size="13" value="60p,100p,150p"> à <input id="sLoiSpeeds" size="7" value="25,36"> km/h</label>
       <label class="sp">braquet <input id="sChainring" size="2" value="44"> / <input id="sCog" size="2" value="11"></label>
       <label class="sp" title="circonférence RÉGLÉE AU DISPLAY (pas celle du pneu) : convertit la vitesse affichée en cadence. Banc Syklo : 2300 (vérifié : cad/v = 2,30 rpm par km/h sous OSF)">circ. mm <input id="sCirc" size="4" value="2300"></label>
@@ -2591,7 +2591,13 @@ const S_KEY='protoS.v6';
    des séances D100 (seule grandeur qui compte pour le moteur), avec circonférence display 2 300 :
    1,81 rpm par km/h affiché (contre 2,31 en 14T) → 18 km/h = 33 rpm, 25 = 45, 36 = 65, 39 = 71.
    Vérifié sur le run du 2026-10-02 : la cadence mesurée par le Rivo colle à 44/11 à 2 % près. */
-const S_DEF={mode:'seance', speeds:'25,18', ergs:'40,70,100', calSpeeds:'25', chainring:44, cog:11, circ:2300, band:1.5, stable:20, max:90, cut:false,
+/* ÉTALONNAGE L0 EN ERG (2026-10-06, Elite Rivo). La grille à résistance % vient du D100 : sur le
+   Rivo la courbe est ~2,5 fois plus raide (40 % = 10 km/h au mieux au niveau 0, soit 18 rpm en
+   44/11 — plus un palier, de l'écrasement). L'ERG, lui, impose une PUISSANCE et reste tenable
+   quelle que soit la machine ; à 36 km/h (65 rpm) il est stable et 100/150/200 W donnent
+   15/22/29 N·m. L'étalonnage est une régression couple ADC ↔ N·m : la faire à 65 rpm reste
+   valable pour des paliers à 45 rpm. */
+const S_DEF={mode:'seance', speeds:'25,18', ergs:'100w,150w,200w', calSpeeds:'36', chainring:44, cog:11, circ:2300, band:1.5, stable:20, max:90, cut:false,
              loiLvls:'1,2,3', loiLoads:'60p,100p,150p', loiSpeeds:'25,36'};
 /* Modèle Tongsheng prod V3.6.5 48 V (tableau « Z8 MOTOR SYKLO Gear parameters », lignes 110-115,
    confirmé au banc les 24-25/09 puis le 02/10) : Gear assist = gain proportionnel,
@@ -2783,7 +2789,8 @@ function startProtoS(){
   /* Depuis le braquet 44/11, une cadence de travail réaliste demande 25-39 km/h : au-dessus de la
      VITESSE MAX réglée au display, l'assistance coupe et le palier ne mesure plus rien. Le run du
      2026-09-24 montrait déjà des coupures vers 30 km/h en débridé. */
-  const vmaxCible=Math.max(...[...numList(p.speeds), ...(loi?numList(p.loiSpeeds):[]), ...(dyn?[S_DYN.launchV]:[])]);
+  const vmaxCible=Math.max(...[...((calib||seance)?numList(p.calSpeeds):[]), ...(calib?[0]:numList(p.speeds)),
+                              ...(loi?numList(p.loiSpeeds):[]), ...(dyn?[S_DYN.launchV]:[])]);
   if(vmaxCible>27 && !confirm('Paliers jusqu’à '+vmaxCible+' km/h (44/11 : il faut cette vitesse pour une cadence normale).\n\n'
       +'Vérifiez AU DISPLAY que la vitesse max hors street est au-dessus (menu Max speed, le mettre au maximum), sinon l’assistance coupera en plein palier.\n\nContinuer ?')) return;
   beep(1);   // le geste utilisateur débloque l’audio pour les bips suivants
