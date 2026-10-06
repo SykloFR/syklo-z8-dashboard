@@ -210,7 +210,7 @@
       <label class="sp">niveau <select id="sLvl"><option value="auto">courant (display)</option>
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
       <label class="sp" title="vitesses des paliers assistés (et du L0 de contrôle en fin de séance : la 1re)">paliers km/h <input id="sSpeeds" size="8" value="25,18"></label>
-      <label class="sp" id="sErgLbl" title="étalonnage L0 : trois efforts connus à cadence constante. Depuis l'Elite Rivo, en ERG (suffixe W) : sa courbe de résistance est trop raide pour que les % soient tenables (40 % = 10 km/h au mieux au niveau 0). À 36 km/h on est à 65 rpm, où l'ERG est stable et où 100/150/200 W font 15/22/29 N·m">charges L0 <input id="sErgs" size="12" value="100w,150w,200w"> à <input id="sCalSpeeds" size="4" value="36"> km/h</label>
+      <label class="sp" id="sErgLbl" title="étalonnage L0 : trois efforts connus à cadence constante. Depuis l'Elite Rivo, en ERG (suffixe W) : sa courbe de résistance est trop raide pour que les % soient tenables (40 % = 10 km/h au mieux au niveau 0). À 36 km/h on est à 65 rpm, où l'ERG est stable et où 100/150/200 W font 15/22/29 N·m">charges L0 <input id="sErgs" size="12" value="70w,110w,150w"> à <input id="sCalSpeeds" size="4" value="25,36"> km/h</label>
       <label class="sp" id="sLoiLbl" title="mode loi : niveaux, charges (r40 = résistance 40 %, g5 = pente 5 %, 150w = ERG, <b>150p = 150 W PÉDALE visés</b>, converti en ERG selon le Gear assist du niveau) et vitesses — un palier par combinaison, débridé (street OFF) pour dépasser 25 km/h">loi : niv. <input id="sLoiLvls" size="5" value="1,2,3"> charges <input id="sLoiLoads" size="13" value="60p,100p,150p"> à <input id="sLoiSpeeds" size="7" value="25,36"> km/h</label>
       <label class="sp">braquet <input id="sChainring" size="2" value="44"> / <input id="sCog" size="2" value="11"></label>
       <label class="sp" title="circonférence RÉGLÉE AU DISPLAY (pas celle du pneu) : convertit la vitesse affichée en cadence. Banc Syklo : 2300 (vérifié : cad/v = 2,30 rpm par km/h sous OSF)">circ. mm <input id="sCirc" size="4" value="2300"></label>
@@ -1062,7 +1062,42 @@ function onTrainerBike(e) {
   if (!(f & 0x0001)) { trSpd = dv.getUint16(o, true) / 100; o += 2; }   // bit 0 inversé : vitesse présente si 0
   if (f & 0x0002) o += 2;
   trCad = (f & 0x0004) && o + 2 <= dv.byteLength ? dv.getUint16(o, true) / 2 : null;
-  trT = Date.now();
+  trT = trTftms = Date.now();
+}
+
+/* VITESSE / CADENCE PAR CYCLING POWER (2026-10-06) : après une calibration (spin-down) dans l'app Elite,
+   le Rivo n'émettait plus AUCUN paquet Indoor Bike Data (2AD2, notification pourtant active), et le run
+   d'étalonnage est parti sans tspd/tcad. Sa mesure CPS (2A63, 1 Hz, flags 0x30) porte les deux :
+   - données pédalier (bit 5) : tours cumulés uint16 + date du dernier tour (1/1024 s) → cadence
+     MESURÉE, vérifiée au banc à 1,01 × la cadence du braquet 44/11 sur 19 paliers ;
+   - données roue (bit 4) : tours cumulés uint32 + date (1/2048 s). C'est le VOLANT, pas la roue :
+     ~89 tours/s à 28,5 km/h display → CPS_KMH_PER_RPS (vitesse « trainer », échelle trK ≈ 0,94).
+   Repli seulement : dès que 2AD2 parle (< 3 s), c'est lui qui fait foi. */
+const CPS_KMH_PER_RPS = 0.300;
+let trTftms = 0, cpsW = null, cpsC = null, cpsCrankAt = 0, cpsCad = null;
+function onTrainerCpsSpd(e) {
+  const dv = e.target.value; if (dv.byteLength < 4) return;
+  const f = dv.getUint16(0, true), now = Date.now(); let o = 4;
+  if (f & 0x0001) o += 1;                          // pedal power balance
+  if (f & 0x0004) o += 2;                          // accumulated torque (bit 3 = source, sans champ)
+  let spd = null;
+  if ((f & 0x0010) && o + 6 <= dv.byteLength) {
+    const r = dv.getUint32(o, true), t = dv.getUint16(o + 4, true); o += 6;
+    if (cpsW) { const dt = ((t - cpsW.t + 65536) % 65536) / 2048, dr = r - cpsW.r;
+                spd = dt > 0 ? dr / dt * CPS_KMH_PER_RPS : dr === 0 ? 0 : null; }
+    cpsW = { r, t };
+  }
+  if ((f & 0x0020) && o + 4 <= dv.byteLength) {
+    const r = dv.getUint16(o, true), t = dv.getUint16(o + 2, true);
+    if (cpsC && r !== cpsC.r) {
+      const dt = ((t - cpsC.t + 65536) % 65536) / 1024, dr = (r - cpsC.r + 65536) % 65536;
+      if (dt > 0 && dt < 4) cpsCad = +(60 * dr / dt).toFixed(1);
+      cpsCrankAt = now;
+    } else if (now - cpsCrankAt > 3000) cpsCad = 0;   // plus de tour de pédalier : roue libre ou arrêt
+    cpsC = { r, t };
+  }
+  if (spd == null || now - trTftms < 3000) return;  // 2AD2 vivant → il fait foi
+  trSpd = spd; trCad = cpsCad; trT = now;
 }
 
 function parseCPS(dv) {
@@ -1127,6 +1162,7 @@ async function trainerSetup(dev){
   }
   await ch.startNotifications();
   ch.addEventListener('characteristicvaluechanged', cps ? trainerOnCps : trainerOnFtms);
+  if (cps) { cpsW = cpsC = null; ch.addEventListener('characteristicvaluechanged', onTrainerCpsSpd); }
   if (!cps) ch.addEventListener('characteristicvaluechanged', onTrainerBike);
   else try { const fs = await gatt.getPrimaryService(FTMS_SVC), fc = await fs.getCharacteristic(FTMS_BIKE);
              await fc.startNotifications(); fc.addEventListener('characteristicvaluechanged', onTrainerBike); } catch (_) {}
@@ -2596,8 +2632,13 @@ const S_KEY='protoS.v6';
    44/11 — plus un palier, de l'écrasement). L'ERG, lui, impose une PUISSANCE et reste tenable
    quelle que soit la machine ; à 36 km/h (65 rpm) il est stable et 100/150/200 W donnent
    15/22/29 N·m. L'étalonnage est une régression couple ADC ↔ N·m : la faire à 65 rpm reste
-   valable pour des paliers à 45 rpm. */
-const S_DEF={mode:'seance', speeds:'25,18', ergs:'100w,150w,200w', calSpeeds:'36', chainring:44, cog:11, circ:2300, band:1.5, stable:20, max:90, cut:false,
+   valable pour des paliers à 45 rpm.
+   Corrigé le soir même après deux runs : à 36 km/h le Rivo ne descend pas sous ~145 W (l'ERG
+   100 W a donné 147) → aucun point sous 21 N·m et une droite fausse (pente 2,54, ordonnée 74 <
+   repos 91). Avec 70/110/150 W à 25 PUIS 36 km/h : pente 2,10 = celle du D100. 200 W à 25 km/h
+   (44 N·m sans assistance en 44/11) est intenable sans à-coups → plafonné à 150 W, qui couvre
+   les paliers loi (≤ ~31 N·m). Il manque encore un point vers 12-15 N·m. */
+const S_DEF={mode:'seance', speeds:'25,18', ergs:'70w,110w,150w', calSpeeds:'25,36', chainring:44, cog:11, circ:2300, band:1.5, stable:20, max:90, cut:false,
              loiLvls:'1,2,3', loiLoads:'60p,100p,150p', loiSpeeds:'25,36'};
 /* Modèle Tongsheng prod V3.6.5 48 V (tableau « Z8 MOTOR SYKLO Gear parameters », lignes 110-115,
    confirmé au banc les 24-25/09 puis le 02/10) : Gear assist = gain proportionnel,
@@ -2612,8 +2653,8 @@ const S_GAIN_K=3.28;                                       // P_assist(roue) = K
    · départ arrêté : arrêt complet, puis effort franc et constant jusqu'à launchV ;
    · reprises : stabilisé à pushV, « poussez plus fort » pushS s puis effort normal relS s, ×pushes.
    Marqueur `sph` dans le JSONL (stop / go / after / settle / push / rel / stair). */
-const S_DYN={launchV:25, launchMax:15, after:3, pushV:20, pushes:2, pushS:3, relS:5, settleS:3, pushMax:60,
-               launchTq:60, pushTq:10, tqTol:6};   // reprise +10 (~5 Nm) : rester SOUS le plafond Gear_current, sinon k mesure le plafond   // cibles d'effort affichées (counts de couple au-dessus du repos / de la base)
+const S_DYN={launchV:32, launchMax:20, after:3, pushV:28, pushes:2, pushS:5, relS:6, settleS:3, pushMax:60,
+               launchTq:90, pushTq:25, tqTol:6};   // v2 du 2026-10-06 (Rivo, 44/11) : v1 = départ 25 km/h repos+60, reprises 20 km/h +10/3 s — trop bas, trop léger, trop court pour se caler ; en v2 départs ET reprises vont au plafond Gear_current à tous les niveaux (validé : +1 à +3 %)   // reprise +10 (~5 Nm) : rester SOUS le plafond Gear_current, sinon k mesure le plafond   // cibles d'effort affichées (counts de couple au-dessus du repos / de la base)
 /* L'effort humain n'est pas imposé : pour comparer les niveaux (et stock ↔ OSF) on AFFICHE une cible
    de couple — départ : repos + launchTq (~29 Nm), reprise : base + pushTq (~10 Nm) — verte à ±tqTol. */
 function sTqGauge(cur, target){ const d=cur-target; return 'couple '+cur+' / visé '+target+(Math.abs(d)<=S_DYN.tqTol?' ✓':d<0?' ↑':' ↓'); }
@@ -2717,7 +2758,7 @@ function sLaunchStep(lvl){
 }
 function sPushStep(lvl){
   return {id:'S-L'+lvl+'-rep', kind:'push', lvl, dur:S_DYN.pushMax, title:'Niveau '+lvl+' — reprises',
-    instr:'Stabilisez-vous vers <b>'+S_DYN.pushV+' km/h</b>. Au bip : <b>poussez plus fort</b> '+S_DYN.pushS+' s jusqu’au <b>couple visé</b> affiché (+'+S_DYN.pushTq+' ≈ +5 Nm, un PETIT cran, vert = bon), au 2ᵉ bip : effort normal '+S_DYN.relS+' s. '+S_DYN.pushes+' fois.'};
+    instr:'Stabilisez-vous vers <b>'+S_DYN.pushV+' km/h</b>. Au bip : <b>poussez plus fort</b> '+S_DYN.pushS+' s jusqu’au <b>couple visé</b> affiché (+'+S_DYN.pushTq+' ≈ +11 Nm, effort net, vert = bon), au 2ᵉ bip : effort normal '+S_DYN.relS+' s. '+S_DYN.pushes+' fois.'};
 }
 function buildProtoS(lvl, p){
   const calPl=()=>{ const out=[]; for(const v of numList(p.calSpeeds)) for(const c of sCharges(p.ergs)) out.push(sPlateau(0, v, p, c)); return out; };
@@ -3771,7 +3812,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-10-02';
+const DASH_VERSION = '2026-10-06';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
