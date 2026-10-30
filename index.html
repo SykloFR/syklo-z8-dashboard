@@ -4156,21 +4156,20 @@ function balRow(r){
 }
 function balPnom(){
   /* Pnom par charge×vitesse, avec les DERNIERS L4 et L5 mesurés à ce point.
-     maison = 0,8·PA4 + 0,2·PA5 (PA = pmeca − pmeca(L0)) ; labo50 = 0,8·pm4 + 0,2·pm5 − (pédale − 50). */
+     Méthode LCIE (rapport 25025428-808485-B §4.2.14) : Pnom = FW(assistance) − FW(sans assistance)
+     = 0,8·PA4 + 0,2·PA5, PA = pmeca − pmeca(L0) au même point. Aucune constante de pertes. */
   const out = {};
   for(const k of new Set(balResults.map(r=>r.key))){
     const last = l => [...balResults].reverse().find(r => r.key === k && r.lvl === l);
     const a = last(4), b5 = last(5); if(!a || !b5) continue;
-    out[k] = { maison: (a.PA!=null && b5.PA!=null) ? Math.round(0.8*a.PA + 0.2*b5.PA) : null,
-               labo50: (a.pmeca!=null && b5.pmeca!=null) ? Math.round(0.8*a.pmeca + 0.2*b5.pmeca - ((a.ped+b5.ped)/2 - 50)) : null,
-               L4:a.id, L5:b5.id };
+    out[k] = { lcie: (a.PA!=null && b5.PA!=null) ? Math.round(0.8*a.PA + 0.2*b5.PA) : null, L4:a.id, L5:b5.id };
   }
   return out;
 }
 function balRenderPnom(){
   const o = balPnom();
   $('balPnom').textContent = Object.keys(o).length ? Object.entries(o).map(([k,v]) =>
-    k+' : maison '+(v.maison??'–')+' W, labo (pertes 50 W) '+(v.labo50??'–')+' W').join(' · ') : '–';
+    k+' : Pnom '+(v.lcie??'– (L0 manquant)')+' W (0,8·PA4 + 0,2·PA5)').join(' · ') : '–';
 }
 function balFields(d, now){
   if(!bal) return {};
