@@ -427,11 +427,12 @@ opcode BLE 26 (écriture RAM, jamais d'EEPROM pendant un palier), paramètres ac
 Les facteurs, plafonds et le niveau changés ici sont perdus à l'extinction de l'écran, sauf « Enregistrer en EEPROM » (vélo arrêté).
 Palier = jeu (niveau, P, T, plafond) × charge × vitesse ; charge <code>erg</code> (W roue) ou <code>ped</code> (W pédale, ERG asservi).</div>
 <div class="row"><span class="k">Paramètres actifs (0x09)</span><span class="val" id="balLive">–</span></div>
-<div class="row"><span class="k">Bornes (grille convenue)</span><span class="val"><textarea id="balLimits" rows="2" cols="70">{"capW":{"1":150,"2":225,"3":300,"4":450,"5":650},"P":[1,254],"T":[1,254],"ergMax":800,"curMax":160}</textarea></span></div>
+<div class="row"><span class="k">Bornes (grille convenue)</span><span class="val"><textarea id="balLimits" rows="2" cols="70">{"capW":{"1":150,"2":225,"3":300,"4":450,"5":650},"P":[1,254],"T":[1,254],"ergMax":900,"curMax":160}</textarea></span></div>
 <div class="row"><span class="k">Paliers (JSON)</span><span class="val"><textarea id="balPlan" rows="6" cols="70"></textarea></span></div>
 <div class="row">
-  <button id="btnBalGen" class="sec">Grille plateau (L0 + L1-L5)</button>
-  <button id="btnBalGenStock" class="sec">Grille référence stock</button>
+  <button id="btnBalGen" class="sec">Grille OSF plateau (séance 4)</button>
+  <button id="btnBalGenStock" class="sec">Grille référence stock (séance 4)</button>
+  <button id="btnBalGenCycle" class="sec">Cycle 2 min L5 / 8 min L4</button>
   <button id="btnBalStart">▶ Lancer le balayage</button>
   <button id="btnBalStop" class="sec">■ Arrêter</button>
   <button id="btnBalCommit" class="sec" title="vélo arrêté : écrit le jeu actif en EEPROM (commande 26/8)">Enregistrer en EEPROM</button>
@@ -3838,7 +3839,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-10-30';
+const DASH_VERSION = '2026-10-30b';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
@@ -4025,28 +4026,39 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
    (pas de couple P18, 3,3 pas/kg). Indicative : le critère utilise pmeca(L0). */
 const pedW = d => (d && d.delta && d.cad) ? d.delta * 0.61 * d.cad * 2 * Math.PI / 60 : 0;
 /* pbat : BMS JBD si connecté, sinon courant moteur (lit 7,7 % trop haut, CR 21 §4) × tension */
-const pbatW = (d, now) => { const f = sBmsFields(now); return f.pbat != null ? f.pbat : d.cur * 0.16 / 1.077 * d.voltX10 / 10; };
+const pbatW = (d, now) => { const f = sBmsFields(now); if (f.pbat != null) return f.pbat;
+  return isStock() ? null : d.cur * 0.16 / 1.077 * d.voltX10 / 10; };   // stock : cur = PHASE (CR 20 §5) -> BMS obligatoire
 const median = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
 
 let bal = null;          // balayage en cours
 let balResults = [];     // résultats de paliers (toutes séances depuis le chargement de la page)
 let balPending = null;   // jeu proposé hors grille, en attente de clic
 const balLimits = () => { try { return JSON.parse($('balLimits').value); } catch(_) { return null; } };
-const balKey = p => (p.load.ped ? 'p'+p.load.ped : 'e'+p.load.erg) + '@' + p.v;
+const balKey = p => (p.load.ped ? 'p'+p.load.ped : 'e'+p.load.erg) + '@' + p.v + (p.note ? '/'+p.note.slice(0,9) : '');
 
+/* Grilles de la séance 4 (runbook chantier-z8-osf/PROMPT-reprise-banc-rivo-seance4.md) :
+   22 km/h (sous la coupure 25), deux braquets = deux cadences, 150 W pédale (condition LCIE) puis 100 W (robustesse). */
+const BAL_V = 22, BAL_GEARS = [{note:'braquet A ~60 rpm (44x17)'}, {note:'braquet B ~80 rpm (44x13)'}];
+function balGrid(levels, extra){
+  const plan = [];
+  for (const g of BAL_GEARS) {
+    for (const ped of [150, 100]) plan.push({lvl:0, load:{ped}, v:BAL_V, note:g.note});
+    for (const l of levels) for (const ped of [150, 100]) plan.push({lvl:l, ...(extra ? extra(l) : {}), load:{ped}, v:BAL_V, note:g.note});
+  }
+  return plan;
+}
+const balShow = plan => { $('balPlan').value = JSON.stringify(plan).replace(/\},\{/g,'},\n{'); };
 function balGenPlateau(){
   /* Valeurs de départ de la spec §2.2 (plateau dès 80 W pédale, consignes corrigées capteur). */
   const set = {1:[30,22,100], 2:[45,34,150], 3:[67,50,225], 4:[100,75,325], 5:[168,125,525]};
-  const loads = [80,100,150], v = 25, plan = [];
-  for(const ped of loads) plan.push({lvl:0, load:{ped}, v});
-  for(const l of [1,2,3,4,5]) for(const ped of loads) plan.push({lvl:l, P:set[l][0], T:set[l][1], capW:set[l][2], load:{ped}, v});
-  $('balPlan').value = JSON.stringify(plan).replace(/\},\{/g,'},\n{');
+  balShow(balGrid([1,2,3,4,5], l => ({P:set[l][0], T:set[l][1], capW:set[l][2]})));
 }
-function balGenStock(){
-  /* Référence firmware d'origine : niveau seul (P/T/plafond ignorés hors OSF), mêmes charges. */
-  const plan = [];
-  for(const l of [0,4,5]) for(const ped of [80,100,150]) for(const v of [25]) plan.push({lvl:l, load:{ped}, v});
-  $('balPlan').value = JSON.stringify(plan).replace(/\},\{/g,'},\n{');
+function balGenStock(){ balShow(balGrid([1,2,3,4,5])); }   // stock : seul le niveau est piloté
+function balGenCycle(){
+  /* Cycle court de puissance nominale : L5 2 min puis L4 8 min, 150 W pédale, braquet A.
+     Réactiver « Cooling down » à l'écran avant (timer 2/8). */
+  balShow([{lvl:5, load:{ped:150}, v:BAL_V, settle:0, measure:115, note:'braquet A, cycle L5 2 min'},
+           {lvl:4, load:{ped:150}, v:BAL_V, settle:0, measure:475, note:'braquet A, cycle L4 8 min'}]);
 }
 function balWithinLimits(p, lim){
   if(!lim) return false;
@@ -4109,10 +4121,12 @@ async function balNext(){
   const ok = await balApply(p);
   if(!bal) return;
   if(!ok) return balEnd('⚠ réglages non confirmés par l\u2019écran (0x09)');
-  bal.erg = p.load.erg != null ? p.load.erg : p.load.ped;
+  bal.erg = p.load.erg != null ? p.load.erg
+          : isStock() ? sResolveCharge({ped:p.load.ped}, p.lvl).erg   // stock : loi stock, boucle ouverte
+          : p.load.ped;
   await balErg(bal.erg);
   bal.phase = 'établissement'; bal.t0 = Date.now();
-  balUi('palier '+(bal.idx+1)+' : pédalez à '+p.v+' km/h — établissement');
+  balUi('palier '+(bal.idx+1)+' : pédalez à '+p.v+' km/h'+(p.note?' — '+p.note:'')+' — établissement');
 }
 function balSample(d, now){
   const b = bal, p = b && b.plan[b.idx]; if(!p || b.phase === 'réglage') return;
@@ -4122,28 +4136,32 @@ function balSample(d, now){
   b.lastPkt = now;
   const ped = pedW(d);
   // ERG asservi sur la puissance pédale (charge « ped ») : correction lente toutes les 2 s
-  if(p.load.ped != null && now - b.ergT > 2000 && ped > 0){
+  if(live && liveFresh(now) && live.lvl !== p.lvl) return balEnd('⚠ niveau changé par l\u2019écran (L'+live.lvl+' au lieu de L'+p.lvl+', timer L5 ?)');
+  if(p.load.ped != null && !isStock() && now - b.ergT > 2000 && ped > 0){
     b.ergT = now; b.erg = Math.round(b.erg + 0.5 * (p.load.ped - ped)); balErg(b.erg);
   }
   const inBand = Math.abs(d.spdX10/10 - p.v) <= +$('balBand').value;
   if(b.phase === 'établissement'){
-    if(now - b.t0 >= 1000 * +$('balSettle').value && inBand){ b.phase = 'mesure'; b.t0 = now; }
+    if(now - b.t0 >= 1000 * (p.settle ?? +$('balSettle').value) && inBand){ b.phase = 'mesure'; b.t0 = now; }
     return;
   }
   if(b.phase === 'mesure' && inBand){
     b.samples.push({pbat:pbatW(d, now), pmeca:pmeca, ped, cad:d.cad, cur:d.cur, erg:b.erg});
     b.counted += 0.2;
-    $('balStep').textContent = 'palier '+(b.idx+1)+' : mesure '+Math.floor(b.counted)+' / '+$('balMeasure').value+' s';
-    if(b.counted >= +$('balMeasure').value) balClose();
+    const mT = p.measure ?? +$('balMeasure').value;
+    $('balStep').textContent = 'palier '+(b.idx+1)+' : mesure '+Math.floor(b.counted)+' / '+mT+' s'+(p.note?' — '+p.note:'');
+    if(b.counted >= mT) balClose();
   }
 }
 function balClose(){
   const b = bal, p = b.plan[b.idx], S = b.samples;
   const r = { id:'B'+(balResults.length+1), lvl:p.lvl, P:p.P ?? null, T:p.T ?? null, capW:p.capW ?? null, key:balKey(p),
-              load:p.load, v:p.v, pbat:median(S.map(x=>x.pbat)), pmeca:median(S.filter(x=>x.pmeca!=null).map(x=>x.pmeca)),
+              load:p.load, v:p.v, note:p.note ?? null, stock:isStock(), pbat:median(S.filter(x=>x.pbat!=null).map(x=>x.pbat)), pmeca:median(S.filter(x=>x.pmeca!=null).map(x=>x.pmeca)),
               ped:median(S.map(x=>x.ped)), cad:median(S.map(x=>x.cad)), erg:median(S.map(x=>x.erg)), n:S.length, t:Date.now() };
   const l0 = [...balResults].reverse().find(x => x.lvl === 0 && x.key === r.key && x.pmeca != null);
-  r.PA = (l0 && r.pmeca != null) ? r.pmeca - l0.pmeca : null;   // assistance à la roue = pmeca − pmeca(L0)
+  /* assistance à la roue = pmeca − pmeca(L0). En STOCK l'ERG est imposé en boucle ouverte (loi stock) :
+     pmeca vaut la consigne, PA ne serait qu'un artefact -> non calculé ; la référence stock se lit sur pbat (BMS). */
+  r.PA = (!r.stock && l0 && !l0.stock && r.pmeca != null) ? r.pmeca - l0.pmeca : null;
   balResults.push(r); balRow(r); balRenderPnom();
   balNext();
 }
@@ -4208,6 +4226,7 @@ $('btnBalConfirm').onclick = () => { if(balPending){ if(bal) bal.plan.splice(bal
 $('btnBalReject').onclick = () => { balPending = null; $('balConfirmRow').hidden = true; };
 $('btnBalGen').onclick = balGenPlateau;
 $('btnBalGenStock').onclick = balGenStock;
+$('btnBalGenCycle').onclick = balGenCycle;
 $('btnBalStart').onclick = balStart;
 $('btnBalStop').onclick = () => balEnd('arrêté');
 $('btnBalCommit').onclick = async () => {
