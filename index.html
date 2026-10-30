@@ -420,6 +420,28 @@
   <tr><td>eMTB</td><td id="aE0">–</td><td id="aE1">–</td><td id="aE2">–</td><td id="aE3">–</td><td id="aE4">–</td></tr>
 </table>
 
+
+<h2>Banc interactif — balayage (écran 2.19.4-banc, réglages en RAM)</h2>
+<div class="hint">Spec : <code>chantier-z8-osf/specs/banc-interactif-et-loi-plateau.md</code>. Écran <b>2.19.4-banc</b> requis :
+opcode BLE 26 (écriture RAM, jamais d'EEPROM pendant un palier), paramètres actifs relus par le paquet 0x09.
+Les facteurs, plafonds et le niveau changés ici sont perdus à l'extinction de l'écran, sauf « Enregistrer en EEPROM » (vélo arrêté).
+Palier = jeu (niveau, P, T, plafond) × charge × vitesse ; charge <code>erg</code> (W roue) ou <code>ped</code> (W pédale, ERG asservi).</div>
+<div class="row"><span class="k">Paramètres actifs (0x09)</span><span class="val" id="balLive">–</span></div>
+<div class="row"><span class="k">Bornes (grille convenue)</span><span class="val"><textarea id="balLimits" rows="2" cols="70">{"capW":{"1":150,"2":225,"3":300,"4":450,"5":650},"P":[1,254],"T":[1,254],"ergMax":800,"curMax":160}</textarea></span></div>
+<div class="row"><span class="k">Paliers (JSON)</span><span class="val"><textarea id="balPlan" rows="6" cols="70"></textarea></span></div>
+<div class="row">
+  <button id="btnBalGen" class="sec">Grille plateau (L0 + L1-L5)</button>
+  <button id="btnBalGenStock" class="sec">Grille référence stock</button>
+  <button id="btnBalStart">▶ Lancer le balayage</button>
+  <button id="btnBalStop" class="sec">■ Arrêter</button>
+  <button id="btnBalCommit" class="sec" title="vélo arrêté : écrit le jeu actif en EEPROM (commande 26/8)">Enregistrer en EEPROM</button>
+  <label class="sp">réglages <input id="balSettle" size="2" value="10"> s + mesure <input id="balMeasure" size="2" value="30"> s, bande ± <input id="balBand" size="3" value="1.5"> km/h</label>
+</div>
+<div class="row"><span class="k">Étape</span><span class="val" id="balStep">–</span></div>
+<div class="row" id="balConfirmRow" hidden><span class="k">Hors grille</span><span class="val"><span id="balConfirmTxt"></span> <button id="btnBalConfirm">Accepter ce jeu</button> <button id="btnBalReject" class="sec">Refuser</button></span></div>
+<table class="assist" id="balTbl"><tr><th>palier</th><th>niv</th><th>P/T</th><th>plaf.</th><th>charge</th><th>v</th><th>pbat</th><th>pmeca</th><th>pédale</th><th>PA</th><th>cad</th><th>n</th></tr></table>
+<div class="row"><span class="k">Pnom en direct</span><span class="val" id="balPnom">–</span></div>
+<pre id="benchState" style="font-size:11px;white-space:pre-wrap;max-height:160px;overflow:auto"></pre>
 <script>
 const NUS_SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const NUS_TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
@@ -429,7 +451,9 @@ const NUS_TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
    boucle du display jusqu'à ~1 s, la liaison moteur tombe (> 750 ms) et le
    moteur lève ERROR_FATAL — affiché « err06 ». C'est exactement ce qui a fait
    échouer les essais du 2026-07-24. Le handler BLE_BENCH, lui, sort AVANT
-   l'armement de l'écriture (ble_services.c). */
+   l'armement de l'écriture (ble_services.c).
+   2026-10-30 : BLE_LIVE (26, écran 2.19.4-banc) sort lui aussi AVANT l'armement ;
+   seule sa sous-commande 8 (commit, refusée en roulant) écrit l'EEPROM. */
 const NUS_RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
 let nusRx = null;
 const $ = id => document.getElementById(id);
@@ -533,6 +557,7 @@ function onNotify(ev) {
   if (h === 0x02 && dv.byteLength >= 12) return handle02(dv);
   if (h === 0x06 && dv.byteLength >= 8)  return handle06(dv);
   if (h === 0x08 && dv.byteLength >= 19) return handle08(dv);
+  if (h === 0x09 && dv.byteLength >= 19) return handle09(dv);
   // header 3 = trip SykloConnect, ignoré
 }
 
@@ -845,8 +870,9 @@ function handle04(dv) {
       ...sBmsFields(now),
       ...(trT && now-trT<3000 && trSpd!=null ? { tspd:+trSpd.toFixed(2), ...(trCad!=null ? { tcad:trCad } : {}) } : {}),
       ...(lastF46 ? { f46:lastF46.hex, f46age:lastF46.age, f46n:lastF46.n, f46len:lastF46.len } : {}),
-      ...rFields(), ...gpsFields(now) }, ts); $('recInfo').textContent = log.length+' échantillons'+recWarnTxt(); }
+      ...rFields(), ...gpsFields(now), ...liveFields(now), ...balFields(d, now) }, ts); $('recInfo').textContent = log.length+' échantillons'+recWarnTxt(); }
   if (proto) protoSample(d, now);
+  if (bal) balSample(d, now);
 }
 
 function handle05(dv) {
@@ -3812,7 +3838,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-10-06';
+const DASH_VERSION = '2026-10-30';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
@@ -3970,6 +3996,226 @@ $('btnStats').onclick = async () => {
   await navigator.clipboard.writeText(JSON.stringify(s, null, 1));
   $('recInfo').textContent = 'stats+config copiées → coller à Claude';
 };
+
+/* ===================== BANC INTERACTIF (2026-10-30) =====================
+   Écran 2.19.4-banc : opcode 26 BLE_LIVE (RAM), paquet 0x09 (paramètres actifs).
+   Spec : chantier-z8-osf/specs/banc-interactif-et-loi-plateau.md */
+let live = null;   // dernier 0x09 : {ver,lvl,P,T,capW,walk,mode,l5On,l5Off,refuse,dirty,caps[],motor,pmaxW,t}
+const LIVE_REFUSE = {0:'', 1:'arguments', 2:'refusé en roulant', 3:'moteur non Z8-OSF', 4:'code de commit'};
+function handle09(dv){
+  const b = i => dv.getUint8(i);
+  live = { ver:b(1), lvl:b(2), P:b(3), T:b(4), capW:b(5)*25, walk:b(6), mode:b(7), l5On:b(8)*10, l5Off:b(9)*10,
+           refuse:b(10), dirty:b(11), caps:[b(12),b(13),b(14),b(15),b(16)].map(x=>x*25), motor:b(17), pmaxW:b(18)*25, t:Date.now() };
+  $('balLive').textContent = 'v'+live.ver+' · L'+live.lvl+' · P '+live.P+' / T '+live.T+' · plafond '+(live.capW||'aucun')
+    +' W · plafonds L1-L5 '+live.caps.join('/')+' · mode '+live.mode+' · L5 '+live.l5On+' s / '+live.l5Off+' s'
+    +(live.dirty?' · ≠ EEPROM':'')+(live.refuse?' · refus : '+(LIVE_REFUSE[live.refuse]||live.refuse):'');
+}
+const liveFresh = now => live && (now - live.t) < 3000;
+function liveFields(now){
+  return liveFresh(now) ? { liveVer:live.ver, llvl:live.lvl, fP:live.P, fT:live.T, capW:live.capW, lmode:live.mode } : {};
+}
+async function liveSend(sub, a, b){
+  if(!nusRx) return false;
+  const f = Uint8Array.of(26, sub & 0xFF, (a||0) & 0xFF, (b||0) & 0xFF);
+  try{ if(nusRx.writeValueWithoutResponse) await nusRx.writeValueWithoutResponse(f); else await nusRx.writeValue(f); return true; }
+  catch(_){ try{ await nusRx.writeValue(f); return true; }catch(__){ return false; } }
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+/* Puissance pédale estimée par le couple OSF : delta × 0,61 N·m × cadence × 2π/60
+   (pas de couple P18, 3,3 pas/kg). Indicative : le critère utilise pmeca(L0). */
+const pedW = d => (d && d.delta && d.cad) ? d.delta * 0.61 * d.cad * 2 * Math.PI / 60 : 0;
+/* pbat : BMS JBD si connecté, sinon courant moteur (lit 7,7 % trop haut, CR 21 §4) × tension */
+const pbatW = (d, now) => { const f = sBmsFields(now); return f.pbat != null ? f.pbat : d.cur * 0.16 / 1.077 * d.voltX10 / 10; };
+const median = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
+
+let bal = null;          // balayage en cours
+let balResults = [];     // résultats de paliers (toutes séances depuis le chargement de la page)
+let balPending = null;   // jeu proposé hors grille, en attente de clic
+const balLimits = () => { try { return JSON.parse($('balLimits').value); } catch(_) { return null; } };
+const balKey = p => (p.load.ped ? 'p'+p.load.ped : 'e'+p.load.erg) + '@' + p.v;
+
+function balGenPlateau(){
+  /* Valeurs de départ de la spec §2.2 (plateau dès 80 W pédale, consignes corrigées capteur). */
+  const set = {1:[30,22,100], 2:[45,34,150], 3:[67,50,225], 4:[100,75,325], 5:[168,125,525]};
+  const loads = [80,100,150], v = 25, plan = [];
+  for(const ped of loads) plan.push({lvl:0, load:{ped}, v});
+  for(const l of [1,2,3,4,5]) for(const ped of loads) plan.push({lvl:l, P:set[l][0], T:set[l][1], capW:set[l][2], load:{ped}, v});
+  $('balPlan').value = JSON.stringify(plan).replace(/\},\{/g,'},\n{');
+}
+function balGenStock(){
+  /* Référence firmware d'origine : niveau seul (P/T/plafond ignorés hors OSF), mêmes charges. */
+  const plan = [];
+  for(const l of [0,4,5]) for(const ped of [80,100,150]) for(const v of [25]) plan.push({lvl:l, load:{ped}, v});
+  $('balPlan').value = JSON.stringify(plan).replace(/\},\{/g,'},\n{');
+}
+function balWithinLimits(p, lim){
+  if(!lim) return false;
+  if(p.lvl < 0 || p.lvl > 5) return false;
+  if(p.P != null && (p.P < lim.P[0] || p.P > lim.P[1])) return false;
+  if(p.T != null && (p.T < lim.T[0] || p.T > lim.T[1])) return false;
+  if(p.capW != null && p.lvl >= 1 && (p.capW % 25 || p.capW > (lim.capW[p.lvl] ?? 0))) return false;
+  if(p.load && p.load.erg != null && p.load.erg > lim.ergMax) return false;
+  return true;
+}
+async function balApply(p){
+  /* Envoie seulement ce qui change, puis attend que le 0x09 confirme (5 s, 2 essais). */
+  const osf = live && live.motor >= 4;
+  for(let attempt = 0; attempt < 2; attempt++){
+    const v0 = live ? live.ver : null;
+    if(osf && p.lvl >= 1){
+      if(p.P != null) await liveSend(0, p.lvl, p.P);
+      if(p.T != null) await liveSend(1, p.lvl, p.T);
+      if(p.capW != null) await liveSend(2, p.lvl, p.capW/25);
+    }
+    await liveSend(3, p.lvl, 0);
+    for(let i = 0; i < 50; i++){
+      await sleep(100);
+      if(!bal) return false;
+      if(live && live.ver !== v0 && live.lvl === p.lvl
+         && (!osf || p.lvl < 1 || ((p.P == null || live.P === p.P) && (p.T == null || live.T === p.T) && (p.capW == null || live.capW === p.capW))))
+        return true;
+    }
+  }
+  return false;
+}
+async function balErg(w){ if(ftmsCtrl) await trainerTargetPowerW(Math.max(0, Math.min(w, (balLimits()||{}).ergMax || 800))); }
+function balUi(msg){ $('balStep').textContent = msg; balState(); }
+function balState(){
+  const st = { etat: bal ? bal.phase : 'arrêt', palier: bal ? bal.idx + 1 : null, total: bal ? bal.plan.length : null,
+               courant: bal ? bal.plan[bal.idx] : null, paramsActifs: live, resultats: balResults.slice(-40),
+               pnom: balPnom(), enAttente: balPending, bornes: balLimits() };
+  $('benchState').textContent = JSON.stringify(st);
+  return st;
+}
+async function balStart(){
+  if(bal) return;
+  let plan; try { plan = JSON.parse($('balPlan').value); } catch(_) { alert('Paliers : JSON invalide'); return; }
+  if(!Array.isArray(plan) || !plan.length) { alert('Aucun palier'); return; }
+  if(!nusRx) { alert('Écran non connecté'); return; }
+  if(!live) { alert('Pas de paquet 0x09 : il faut l\u2019écran 2.19.4-banc'); return; }
+  const lim = balLimits(); const bad = plan.filter(p => !balWithinLimits(p, lim));
+  if(bad.length && !confirm(bad.length+' palier(s) hors des bornes. Les garder quand même ?')) return;
+  bal = { plan, idx:-1, phase:'réglage', samples:[], t0:0, counted:0, erg:null, ergT:0, lastPkt:Date.now() };
+  if(!recording && !proto){ log = []; recording = true; $('btnRec').textContent='■ Stop'; $('btnRec').disabled=true; $('btnDl').disabled=true; }
+  balNext();
+}
+async function balNext(){
+  if(!bal) return;
+  bal.idx++;
+  if(bal.idx >= bal.plan.length) return balEnd('balayage terminé');
+  const p = bal.plan[bal.idx];
+  bal.phase = 'réglage'; bal.samples = []; bal.counted = 0;
+  balUi('palier '+(bal.idx+1)+'/'+bal.plan.length+' : envoi des réglages L'+p.lvl+(p.P!=null?' P'+p.P+' T'+p.T:'')+(p.capW!=null?' plafond '+p.capW+' W':''));
+  const ok = await balApply(p);
+  if(!bal) return;
+  if(!ok) return balEnd('⚠ réglages non confirmés par l\u2019écran (0x09)');
+  bal.erg = p.load.erg != null ? p.load.erg : p.load.ped;
+  await balErg(bal.erg);
+  bal.phase = 'établissement'; bal.t0 = Date.now();
+  balUi('palier '+(bal.idx+1)+' : pédalez à '+p.v+' km/h — établissement');
+}
+function balSample(d, now){
+  const b = bal, p = b && b.plan[b.idx]; if(!p || b.phase === 'réglage') return;
+  const lim = balLimits() || {curMax:160};
+  if(d.err) return balEnd('⚠ erreur moteur '+d.err+' : arrêt');
+  if(d.cur > lim.curMax) return balEnd('⚠ courant '+d.cur+' > '+lim.curMax+' : arrêt');
+  b.lastPkt = now;
+  const ped = pedW(d);
+  // ERG asservi sur la puissance pédale (charge « ped ») : correction lente toutes les 2 s
+  if(p.load.ped != null && now - b.ergT > 2000 && ped > 0){
+    b.ergT = now; b.erg = Math.round(b.erg + 0.5 * (p.load.ped - ped)); balErg(b.erg);
+  }
+  const inBand = Math.abs(d.spdX10/10 - p.v) <= +$('balBand').value;
+  if(b.phase === 'établissement'){
+    if(now - b.t0 >= 1000 * +$('balSettle').value && inBand){ b.phase = 'mesure'; b.t0 = now; }
+    return;
+  }
+  if(b.phase === 'mesure' && inBand){
+    b.samples.push({pbat:pbatW(d, now), pmeca:pmeca, ped, cad:d.cad, cur:d.cur, erg:b.erg});
+    b.counted += 0.2;
+    $('balStep').textContent = 'palier '+(b.idx+1)+' : mesure '+Math.floor(b.counted)+' / '+$('balMeasure').value+' s';
+    if(b.counted >= +$('balMeasure').value) balClose();
+  }
+}
+function balClose(){
+  const b = bal, p = b.plan[b.idx], S = b.samples;
+  const r = { id:'B'+(balResults.length+1), lvl:p.lvl, P:p.P ?? null, T:p.T ?? null, capW:p.capW ?? null, key:balKey(p),
+              load:p.load, v:p.v, pbat:median(S.map(x=>x.pbat)), pmeca:median(S.filter(x=>x.pmeca!=null).map(x=>x.pmeca)),
+              ped:median(S.map(x=>x.ped)), cad:median(S.map(x=>x.cad)), erg:median(S.map(x=>x.erg)), n:S.length, t:Date.now() };
+  const l0 = [...balResults].reverse().find(x => x.lvl === 0 && x.key === r.key && x.pmeca != null);
+  r.PA = (l0 && r.pmeca != null) ? r.pmeca - l0.pmeca : null;   // assistance à la roue = pmeca − pmeca(L0)
+  balResults.push(r); balRow(r); balRenderPnom();
+  balNext();
+}
+function balRow(r){
+  const f = x => x == null ? '–' : Math.round(x);
+  const tr = document.createElement('tr');
+  tr.innerHTML = [r.id, r.lvl, r.P!=null?r.P+'/'+r.T:'–', f(r.capW), r.load.ped!=null?r.load.ped+' p':r.load.erg+' W', r.v,
+                  f(r.pbat), f(r.pmeca), f(r.ped), f(r.PA), f(r.cad), r.n].map(x=>'<td>'+x+'</td>').join('');
+  $('balTbl').appendChild(tr);
+}
+function balPnom(){
+  /* Pnom par charge×vitesse, avec les DERNIERS L4 et L5 mesurés à ce point.
+     Méthode LCIE (rapport 25025428-808485-B §4.2.14) : Pnom = FW(assistance) − FW(sans assistance)
+     = 0,8·PA4 + 0,2·PA5, PA = pmeca − pmeca(L0) au même point. Aucune constante de pertes. */
+  const out = {};
+  for(const k of new Set(balResults.map(r=>r.key))){
+    const last = l => [...balResults].reverse().find(r => r.key === k && r.lvl === l);
+    const a = last(4), b5 = last(5); if(!a || !b5) continue;
+    out[k] = { lcie: (a.PA!=null && b5.PA!=null) ? Math.round(0.8*a.PA + 0.2*b5.PA) : null, L4:a.id, L5:b5.id };
+  }
+  return out;
+}
+function balRenderPnom(){
+  const o = balPnom();
+  $('balPnom').textContent = Object.keys(o).length ? Object.entries(o).map(([k,v]) =>
+    k+' : Pnom '+(v.lcie??'– (L0 manquant)')+' W (0,8·PA4 + 0,2·PA5)').join(' · ') : '–';
+}
+function balFields(d, now){
+  if(!bal) return {};
+  return { bal:bal.idx+1, bph:bal.phase === 'mesure' ? 'm' : bal.phase === 'établissement' ? 'e' : 'r',
+           ...(bal.erg != null ? { berg:bal.erg } : {}) };
+}
+async function balEnd(msg){
+  const b = bal; if(!b) return; bal = null;
+  if(ftmsCtrl) trainerResistancePct(20);   // relâcher la charge
+  balUi(msg);
+  if(recording && !proto){ recording = false; $('btnRec').textContent='● Enregistrer'; $('btnRec').disabled=false; $('btnDl').disabled=!log.length;
+    archiveLog('banc', 'balayage', { paliers:b.plan.length, fait:b.idx, resultats:balResults.slice(-b.plan.length), arret:msg }); }
+}
+setInterval(() => {   // perte de télémétrie > 2 s pendant un palier : arrêt
+  if(bal && bal.phase !== 'réglage' && Date.now() - bal.lastPkt > 2000) balEnd('⚠ télémétrie perdue > 2 s');
+  balState();
+}, 1000);
+
+/* Boucle Claude (Claude in Chrome) : lecture de window.sykloBench.state() ou du bloc #benchState ;
+   propose(jeu) insère le jeu au palier suivant s'il est DANS les bornes, sinon demande un clic à Yanni. */
+window.sykloBench = {
+  state: () => balState(),
+  results: () => balResults,
+  live: () => live,
+  propose(jeu){
+    if(!jeu || jeu.lvl == null || !jeu.load || jeu.v == null) return { accepted:false, reason:'jeu incomplet (lvl, load, v)' };
+    if(balWithinLimits(jeu, balLimits())){
+      if(bal) bal.plan.splice(bal.idx + 1, 0, jeu); else { const pl = JSON.parse($('balPlan').value || '[]'); pl.push(jeu); $('balPlan').value = JSON.stringify(pl); }
+      return { accepted:true, position: bal ? bal.idx + 2 : null };
+    }
+    balPending = jeu; $('balConfirmTxt').textContent = JSON.stringify(jeu); $('balConfirmRow').hidden = false;
+    return { accepted:false, needsConfirm:true };
+  }
+};
+$('btnBalConfirm').onclick = () => { if(balPending){ if(bal) bal.plan.splice(bal.idx + 1, 0, balPending); balPending = null; $('balConfirmRow').hidden = true; } };
+$('btnBalReject').onclick = () => { balPending = null; $('balConfirmRow').hidden = true; };
+$('btnBalGen').onclick = balGenPlateau;
+$('btnBalGenStock').onclick = balGenStock;
+$('btnBalStart').onclick = balStart;
+$('btnBalStop').onclick = () => balEnd('arrêté');
+$('btnBalCommit').onclick = async () => {
+  if(lastSpdX10 > 0) { alert('Vélo en mouvement : enregistrement refusé'); return; }
+  if(!confirm('Écrire le jeu actif en EEPROM de l\u2019écran ?')) return;
+  await liveSend(8, 0xA5, 0);
+};
+balGenPlateau();
 </script>
 </body>
 </html>
