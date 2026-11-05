@@ -882,7 +882,7 @@ function handle04(dv) {
   const ts = recStamp(now, d.seq);
   if (recording) { recPush({ t:ts.t, ...(ts.tr ? { tr:1, ta:now } : {}), stp:(proto?proto.curId:undefined), stb:(proto&&proto.phase==='S'&&sCounted(proto,d,now))?1:undefined, sph:(proto&&proto.phase==='S'&&proto.sph)||undefined,
       bset:(bench&&bench.running)?Math.round(bench.sentD):undefined, lvl:curLvl, mode:curMode, pow:curPower, pmeca:pmeca, street:curStreet, ...d,
-      ...sBmsFields(now),
+      ...sBmsFields(now), ...socFields(now),
       ...(trT && now-trT<3000 && trSpd!=null ? { tspd:+trSpd.toFixed(2), ...(trCad!=null ? { tcad:trCad } : {}) } : {}),
       ...(lastF46 ? { f46:lastF46.hex, f46age:lastF46.age, f46n:lastF46.n, f46len:lastF46.len } : {}),
       ...rFields(), ...gpsFields(now), ...liveFields(now), ...balFields(d, now), ...(proto&&proto.ergNow!=null?{berg:proto.ergNow}:{}) }, ts); $('recInfo').textContent = log.length+' échantillons'+recWarnTxt(); }
@@ -890,6 +890,7 @@ function handle04(dv) {
   if (bal) balSample(d, now);
 }
 
+var dispSoc = null;   // {soc, whX10, t}
 function handle05(dv) {
   const sub = dv.getUint8(1), b = i => dv.getUint8(i), u16 = i => dv.getUint16(i, true);
   if (sub === 0) {
@@ -898,6 +899,8 @@ function handle05(dv) {
       streetSpd:b(15), focMult:b(16), rangeAdj:b(17), thr:b(18) });
   } else if (sub === 1) {
     Object.assign(cfg, { tOff:u16(2), tMax:u16(4), tStep:b(6), pMax:b(7)*25 });
+    // display >= 2.19.5 : SOC (255 = pas encore ancré) et Wh comptés ×10. Page vide (0 et 0) = display plus ancien.
+    if(b(8)<=100 && (b(8)||u16(9))) dispSoc={soc:b(8), whX10:u16(9), t:Date.now()};
   } else if (sub === 2) {
     cfg.aP = [b(2),b(3),b(4),b(5),b(6)]; cfg.aT = [b(7),b(8),b(9),b(10),b(11)];
   } else if (sub === 3) {
@@ -1274,12 +1277,18 @@ $('btnTrainer').onclick = async () => {
    data[2-3] = courant s16 BE ×10 mA (+ = charge, − = décharge), data[19] = SOC %.
    La réponse (34 o) arrive en morceaux BLE de 20 o → réassemblage sur la longueur
    annoncée, resynchronisation sur l'en-tête 0xDD. Interrogation 1 Hz.
+
+   SOC (2026-11-05) : data[4-5] = Ah restants ×10 mAh, data[6-7] = Ah pleins, data[8-9] = cycles,
+   data[21] = nombre de cellules en série. Commande 04 (une fois sur 10) : tensions cellules
+   u16 BE en mV. Le SOC JBD est un compteur de charge : il ne vaut référence qu'après une
+   charge complète, d'où ces champs pour pouvoir le contrôler.
 --------------------------------------------------------------------------- */
 const BMS_SVC='0000ff00-0000-1000-8000-00805f9b34fb', BMS_NOTIFY='0000ff01-0000-1000-8000-00805f9b34fb', BMS_WRITE='0000ff02-0000-1000-8000-00805f9b34fb';
-const BMS_CMD03=Uint8Array.of(0xDD,0xA5,0x03,0x00,0xFF,0xFD,0x77);
-let bmsDev=null, bmsWrite=null, bmsBuf=[], bmsTimer=null, bms=null;   // bms = {v, i, p, soc, t}
+const BMS_CMD03=Uint8Array.of(0xDD,0xA5,0x03,0x00,0xFF,0xFD,0x77), BMS_CMD04=Uint8Array.of(0xDD,0xA5,0x04,0x00,0xFF,0xFC,0x77);
+let bmsDev=null, bmsWrite=null, bmsBuf=[], bmsTimer=null, bms=null;   // bms = {v, i, p, soc, ah, t}
+let bmsInfo=null, bmsCells=null;   // bmsInfo = {ns, fullAh, cycles} ; bmsCells = {min, max, n, t}
 function bmsReset(){
-  bms=null; bmsBuf=[]; if(bmsTimer){ clearInterval(bmsTimer); bmsTimer=null; } bmsWrite=null; bmsDev=null;
+  bms=null; bmsInfo=null; bmsCells=null; bmsBuf=[]; if(bmsTimer){ clearInterval(bmsTimer); bmsTimer=null; } bmsWrite=null; bmsDev=null;
   $('vBms').textContent='–'; $('vBmsU').textContent='V · A réels (BMS JBD)'; $('bmsTile').classList.remove('bad');
   $('btnBms').textContent='Connecter BMS JBD'; $('btnBms').className='sec';
 }
@@ -1292,16 +1301,28 @@ function bmsOnNotify(ev){
     if(bmsBuf.length<tot) return;
     const f=bmsBuf.slice(0,tot); bmsBuf=bmsBuf.slice(tot);
     if(f[tot-1]!==0x77){ bmsBuf=f.slice(1).concat(bmsBuf); continue; }   // faux en-tête : on glisse d'un octet
+    if(f[1]===0x04 && f[2]===0x00 && len>=2){                     // tensions cellules, u16 BE en mV
+      const mv=[]; for(let k=0;k+1<len;k+=2) mv.push(((f[4+k]<<8)|f[5+k])/1000);
+      bmsCells={min:Math.min(...mv), max:Math.max(...mv), n:mv.length, t:Date.now()};
+      continue;
+    }
     if(f[1]!==0x03 || f[2]!==0x00 || len<8) continue;
     const v=((f[4]<<8)|f[5])/100; let i=(f[6]<<8)|f[7]; if(i>32767) i-=65536; i=-i/100;   // décharge positive
-    bms={v, i, p:v*i, soc:len>19?f[4+19]:null, t:Date.now()};
+    bms={v, i, p:v*i, soc:len>19?f[4+19]:null, ah:((f[8]<<8)|f[9])/100, t:Date.now()};
+    bmsInfo={ns:len>21?f[4+21]:null, fullAh:((f[10]<<8)|f[11])/100, cycles:len>9?((f[12]<<8)|f[13]):null};
     $('vBms').textContent=bms.p.toFixed(0);
-    $('vBmsU').textContent=v.toFixed(2)+' V · '+i.toFixed(2)+' A'+(bms.soc!=null?' · SOC '+bms.soc+' %':'');
+    $('vBmsU').textContent=v.toFixed(2)+' V · '+i.toFixed(2)+' A'+(bms.soc!=null?' · SOC '+bms.soc+' %':'')
+      +(bmsCells?' · '+bmsCells.n+'S '+bmsCells.min.toFixed(3)+'-'+bmsCells.max.toFixed(3)+' V':'')
+      +(dispSoc?' · écran '+dispSoc.soc+' %':'');
     $('bmsTile').classList.toggle('bad', v>0 && v<43);
   }
 }
 // champs JSONL (vides si BMS absent ou muet depuis > 3 s)
-function sBmsFields(now){ return (bms && now-bms.t<3000) ? {vbat:+bms.v.toFixed(2), ibat:+bms.i.toFixed(2), pbat:+bms.p.toFixed(1)} : {}; }
+function sBmsFields(now){ return (bms && now-bms.t<3000) ? {vbat:+bms.v.toFixed(2), ibat:+bms.i.toFixed(2), pbat:+bms.p.toFixed(1),
+  ...(bms.soc!=null?{bsoc:bms.soc}:{}), bah:bms.ah,
+  ...(bmsCells && now-bmsCells.t<30000 ? {vcmin:bmsCells.min, vcmax:bmsCells.max} : {})} : {}; }
+// SOC et Wh du display (paquet 0x05 page 1, display >= 2.19.5) : une page toutes les ~2 s
+function socFields(now){ return (dispSoc && now-dispSoc.t<6000) ? {soc:dispSoc.soc, whX10:dispSoc.whX10} : {}; }
 /* Ce BMS JBD décroche souvent (constaté aussi avec SykloConnect) : sur déconnexion NON demandée,
    on garde l'objet appareil et on se reconnecte seul (gatt.connect, sans sélecteur) — 5 essais,
    2 s d'écart. Pendant ce temps sBmsFields() rend {} (données > 3 s) : aucun pbat périmé au JSONL. */
@@ -1312,8 +1333,10 @@ async function bmsSetup(dev){
   const nt=await svc.getCharacteristic(BMS_NOTIFY);
   await nt.startNotifications(); nt.addEventListener('characteristicvaluechanged', bmsOnNotify);
   bmsWrite=await svc.getCharacteristic(BMS_WRITE); bmsDev=dev; bmsBuf=[];
+  let bmsTick=0;
   const poll=async()=>{ if(!bmsWrite) return;
-    try{ if(bmsWrite.properties.write) await bmsWrite.writeValue(BMS_CMD03); else await bmsWrite.writeValueWithoutResponse(BMS_CMD03); }catch(_){ } };
+    const cmd=(bmsTick++%10===5)?BMS_CMD04:BMS_CMD03;   // cellules toutes les 10 s, tension/courant le reste du temps
+    try{ if(bmsWrite.properties.write) await bmsWrite.writeValue(cmd); else await bmsWrite.writeValueWithoutResponse(cmd); }catch(_){ } };
   if(bmsTimer) clearInterval(bmsTimer);
   bmsTimer=setInterval(poll,1000); poll();
   $('btnBms').textContent=(dev.name||'BMS')+' connecté'; $('btnBms').className='sec ok';
@@ -3172,7 +3195,7 @@ function protoSampleS(d,now,st){
   const vt=vEq();
   // tcad = cadence MESURÉE par le trainer (Rivo) : seule grandeur de cadence indépendante du
   // braquet saisi — on la garde telle quelle ici, le filtre « pédalage actif » est dans sMedians.
-  p.samples.push({t:now, lvl:curLvl, pow:curPower, pmeca:pmeca, ...d, ...sBmsFields(now), c:c?1:0, sph:p.sph, vt:vt!=null?+vt.toFixed(2):null,
+  p.samples.push({t:now, lvl:curLvl, pow:curPower, pmeca:pmeca, ...d, ...sBmsFields(now), ...socFields(now), c:c?1:0, sph:p.sph, vt:vt!=null?+vt.toFixed(2):null,
                   ...(trT && now-trT<3000 ? {tspd:trSpd, ...(trCad!=null?{tcad:trCad}:{})} : {})});
   if(d.torque>0 && (d.spdX10||0)===0 && (p.tqRest==null || d.torque<p.tqRest)) p.tqRest=d.torque;   // repos = couple mini à l'arrêt
   if(st.kind!=='plateau') return;
@@ -4049,7 +4072,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-11-05c';
+const DASH_VERSION = '2026-11-05-soc';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
@@ -4115,6 +4138,7 @@ function buildJsonl(ctxOverride, tag, extra){
     id, motorType:$('arcType').value, motorFw:$('arcFw').value||null, ctx, tag:tag||null, note:$('arcNote').value||null,
     preset:(MOTORS[cfg.motor] ?? cfg.motor ?? null), dispFw:(cfg.fw ?? null), proto:srcProto(),
     motorVersion:(motorSrc==null?null:(motorSrc>>4)), ble:(sw102Dev&&sw102Dev.name)||null, dash:DASH_VERSION,
+    ...(bmsInfo?{bmsNs:bmsInfo.ns, bmsFullAh:bmsInfo.fullAh, bmsCycles:bmsInfo.cycles}:{}),
     ua:navigator.userAgent, n:log.length, ...(extra||{}) };
   const text = JSON.stringify({meta}) + '\n' + log.map(r=>JSON.stringify(r)).join('\n') + '\n';
   return { name, path:'logs/'+id+'/'+day+'/'+name, text, meta };
