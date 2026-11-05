@@ -43,13 +43,16 @@ const ctx = e => vm.runInContext(e, sandbox);
 // ---- banc simule ---------------------------------------------------------
 const GA = [0,0.40,0.55,0.70,0.85,1.40], CRANK = 0.170, ZERO = OSF ? 180 : 90, K_REAL = OSF ? 3.3 : 2.8;
 const wheelL0 = P => 0.85*P - 20;                       // manivelle → roue sans assistance
-const PAof = (P,l) => l<1 ? 0 : Math.min(GA[l]*390*Math.pow(Math.max(P,0)/150,1.4), l===5?800:560);
+const SET = {4:{P:0,T:0,cap:0}, 5:{P:0,T:0,cap:0}};     // reglages OSF poses par opcode 26
+const PAof = (P,l) => { if(l<1) return 0;
+  if(OSF){ const c=SET[l]||{P:0,cap:0}; return Math.min(Math.max(P,0)*1.21*c.P/26.8/1.077*0.8, c.cap/1.077*0.8); }   // voie puissance, plafond lu, eta 0,8
+  return Math.min(GA[l]*390*Math.pow(Math.max(P,0)/150,1.4), l===5?800:560); };
 const TR = { res:20, erg:null, eff:0 };                 // consigne et valeur effective (retard 2 s)
 let lvl = 0, seq = 0, spd = 0, vTarget = 0, liveVer = 1, tSim = 0, mass = 0, COG = 17;
 const floorW = v => 3.6*v;
 sandbox.__ftms = { writeValue: async f => { f=[...f];
   if(f[0]===0x04){ TR.res=f[1]; TR.erg=null; } else if(f[0]===0x05){ TR.erg=(f[1]|(f[2]<<8))<<16>>16; OUT.erg.push(((NOW-T0)/1000).toFixed(0)+'s:'+TR.erg); } } };
-sandbox.__nus = { writeValue: async f => { f=[...f]; if(f[0]===26 && f[1]===3){ lvl=f[2]; liveVer++; } } };
+sandbox.__nus = { writeValue: async f => { f=[...f]; if(f[0]!==26) return; liveVer++; if(f[1]===3) lvl=f[2]; else if(SET[f[2]]){ if(f[1]===0) SET[f[2]].P=f[3]; if(f[1]===1) SET[f[2]].T=f[3]; if(f[1]===2) SET[f[2]].cap=f[3]*25; } } };
 ctx('ftmsCtrl = __ftms; trainerDev = {}; ftmsResRange = null; nusRx = __nus;');
 const cad = v => v/3.6/2.30*60*COG/44;
 function pedalOf(pm, l){ let lo=0, hi=2000; for(let i=0;i<50;i++){ const m=(lo+hi)/2; if(wheelL0(m)+PAof(m,l) > pm) hi=m; else lo=m; } return lo; }
@@ -80,7 +83,7 @@ function push04(){
   ctx(`bms = {v:48, i:${(s.pbat/48).toFixed(2)}, p:${s.pbat.toFixed(1)}, soc:80, t:${NOW}}`);
 }
 function push02(){ const dv=new DataView(new ArrayBuffer(16)); dv.setUint8(0,0x02); dv.setUint8(9,1); dv.setUint8(11,0+1); ctx('onNotify')({target:{value:dv}}); }
-function push09(){ const dv=new DataView(new ArrayBuffer(20)); dv.setUint8(0,0x09); dv.setUint8(1,liveVer&0xff); dv.setUint8(2,lvl); dv.setUint8(17,OSF?4:1); ctx('onNotify')({target:{value:dv}}); }
+function push09(){ const dv=new DataView(new ArrayBuffer(20)); dv.setUint8(0,0x09); dv.setUint8(1,liveVer&0xff); dv.setUint8(2,lvl); const c=SET[lvl]; if(c){ dv.setUint8(3,c.P); dv.setUint8(4,c.T); dv.setUint8(5,c.cap/25); } dv.setUint8(17,OSF?4:1); ctx('onNotify')({target:{value:dv}}); }
 function human(){
   const p = ctx('proto'); if(!p) return;
   const st = p.steps[p.idx]; if(!st) return;
@@ -113,7 +116,7 @@ const T0 = NOW;
 (async () => {
   ctx("bmsDev = {name:'SIM'}");
   await advance(3000);
-  ctx("$('sMode').value='car'; $('sCarRun').value='"+RUN+"'; $('sCarMasses').value='9,18,70'; $('sCarCrank').value='170'; $('sCarK').value='"+(RUN==='T0'?'':K)+"'; $('sChainring').value='44'; $('sCirc').value='2300';");
+  ctx("$('sMode').value='car'; $('sCarRun').value='"+RUN+"'; $('sCarMasses').value='9,18,70'; $('sCarCrank').value='170'; $('sCarK').value='"+(RUN==='T0'?'':K)+"'; $('sChainring').value='44'; $('sCirc').value='2300'; $('sCarOsf').value='97/72/350,174/129/625';");
   ctx("$('sCog').value='17'");
   ctx('startProtoS()');
   const S = ctx('S_CAR.runs.'+RUN); if(S.cog) COG = S.cog;
@@ -129,6 +132,7 @@ const T0 = NOW;
   console.log('S_DYN restaure :', ctx('S_DYN.launchV'), '| k saisi :', ctx("$('sCarK').value"));
   const logArr = ctx('log'); console.log('JSONL : '+logArr.length+' lignes, '+logArr.filter(r=>r.stb).length+' comptees');
   const verite = {}; for(const l of [4,5]) for(const P of [100,150]) verite[l+'-'+P] = Math.round(PAof(P,l));
+  if(OSF) console.log('reglages recus :', JSON.stringify(SET));
   console.log('verite PA :', JSON.stringify(verite), '| FW0 :', wheelL0(100), wheelL0(150));
   if(OUTF && L){ const f = ctx("buildJsonl('banc','protoS-car-"+RUN+"', window._lastProto)"); fs.writeFileSync(OUTF, f.text); console.log('ecrit :', OUTF, '('+f.name+')'); }
 })();
