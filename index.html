@@ -176,6 +176,7 @@
   <div class="tile" id="tTq10" hidden><div class="l">Couple 10 bits</div><div class="v" id="vTq10">–</div><div class="u">capteur brut (v4)</div></div>
   <div class="tile" id="tCadS" hidden><div class="l">Cadence capteur</div><div class="v" id="vCadS">–</div><div class="u" id="vCadSU">imp/s (compteur mod 127, v4)</div></div>
   <div class="tile" id="tFw" hidden><div class="l">Roue libre</div><div class="v" id="vFw">–</div><div class="u">bascules/s du bit 7 (v4)</div></div>
+  <div class="tile" id="tP27" hidden><div class="l">P2.7 contrôleur</div><div class="v" id="vP27">–</div><div class="u" id="vP27U">–</div></div>
   <div class="tile" id="tSTemp" hidden><div class="l">Temp. capteur</div><div class="v" id="vSTemp">–</div><div class="u">6 bits bruts (v4)</div></div>
   <div class="tile" id="tHallS" hidden><div class="l">Hall (RD45)</div><div class="v" id="vHallS">–</div><div class="u" id="vHallSU">Hall_Speed (v4)</div></div>
   <div class="tile" id="tPages" hidden style="grid-column:span 2"><div class="l">Pages du patch (v4) — dernière valeur · âge</div><table class="pages" id="vPages"></table></div>
@@ -525,8 +526,9 @@ let motorSrc = null;                 // dernier octet 19 reçu (null = display <
 const srcProto = () => motorSrc == null ? null : (motorSrc & 0x0f);
 const isStock  = () => srcProto() === 2;
 
+let lastP27 = null, lastFoc = 0;   // moteur 1.8.2 (P54) : brut de P2.7, porte par l'octet FOC quand bit 7 = 1
 function decode04raw(dv) {
-  return { seq:dv.getUint8(1), torque:dv.getUint16(2,true), delta:dv.getUint16(4,true),
+  const r = { seq:dv.getUint8(1), torque:dv.getUint16(2,true), delta:dv.getUint16(4,true),
     // duty : le moteur le remonte deja converti en % 0-100 (ebike_app.c,
     // octet 15 de la reponse : "convert duty-cycle to 0 - 100 %") — ne JAMAIS
     // le comparer a la consigne 0-254 sans conversion.
@@ -534,6 +536,11 @@ function decode04raw(dv) {
     cur:dv.getUint16(11,true), voltX10:dv.getUint16(13,true), err:dv.getUint8(15),
     hall:dv.getUint8(16), spdX10:dv.getUint16(17,true),
     src: dv.byteLength >= 20 ? dv.getUint8(19) : null };
+  if (r.src == null || (r.src & 0x0f) !== 2) {   // en stock cet octet est un compteur d'erreurs UART
+    if (r.foc >= 128) { lastP27 = (r.foc & 127) << 5; r.foc = lastFoc; } else lastFoc = r.foc;
+    if (lastP27 != null) r.p27 = lastP27;
+  }
+  return r;
 }
 // STOCK Tongsheng (display >= 2.18.10-rd45log) : les offsets sans objet en stock sont
 // SURCHARGÉS — 4-5 tick brut (période roue, LSB 2,04 ms, AVANT clamp 1750), 6 trames 0x43
@@ -847,6 +854,10 @@ function handle04(dv) {
   $('vCad').textContent=na?'n/a':d.cad; $('vDuty').textContent=na?'n/a':d.duty;
   $('vErps').textContent=na?'n/a':d.erps; $('vFoc').textContent=na?'n/a':d.foc;
   $('vCur').textContent=d.cur; $('vVolt').textContent=(d.voltX10/10).toFixed(1);
+  if (d.p27 != null) {   // estimation : NTC 10 k, B 3360, tirage 10 k (table stock), sonde non confirmée
+    const pr = Math.min(Math.max(d.p27, 1), 4094), pt = 1 / (Math.log(pr / (4095 - pr)) / 3360 + 1 / 298.15) - 273.15;
+    $('tP27').hidden = false; $('vP27').textContent = d.p27; $('vP27U').textContent = '≈ ' + pt.toFixed(0) + ' °C si NTC';
+  }
   $('vSpeed').textContent=(d.spdX10/10).toFixed(1); $('vHall').textContent=na?'n/a':d.hall;
   if (na && d.tickRaw !== undefined) {
     $('vSpdRaw').textContent=(d.spdRawX10/10).toFixed(1);
