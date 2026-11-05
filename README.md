@@ -449,6 +449,8 @@ Campagne : street **OFF** depuis le 44/11 (sauf le run de coupure), charge et br
 `stp` = palier (`S-L0-r70-v20` = résistance 70 %, `S-L3-v14`), `stb` = 1 sur les
 échantillons comptés, `meta` = braquet, consigne trainer, street, médianes.
 
+**Caractérisation L4/L5** (mode de la phase S, 2026-11-05) : runs ≤ 5 min, stock puis OSF, cycliste 100 et 150 W à la manivelle, ERG asservi puis figé, PA = roue − roue L0. Dépouillement `python tools/protoS-l45.py <runs> [--ref <runs stock>]`, rodage `node tools/dryrun-car.js index.html <T0|C47|C62|C79|DEP|REP> [sortie.jsonl] [k]`. Protocole : `chantier-z8-osf/specs/protocole-caracterisation-L4L5.md`.
+
 Dépouillement : `python tools/protoS-report.py <dossier ou fichiers>` (`--id`, `--csv`) —
 étalonnage sur tous les L0, puis par charge et par niveau × vitesse : P_cycliste,
 **P_assist = pmeca − P_cycliste**, gain, `cur`, `pbat`, η, dispersion inter-runs,
