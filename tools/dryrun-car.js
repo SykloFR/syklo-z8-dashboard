@@ -52,7 +52,8 @@ let lvl = 0, seq = 0, spd = 0, vTarget = 0, liveVer = 1, tSim = 0, mass = 0, COG
 const floorW = v => 3.6*v;
 sandbox.__ftms = { writeValue: async f => { f=[...f];
   if(f[0]===0x04){ TR.res=f[1]; TR.erg=null; } else if(f[0]===0x05){ TR.erg=(f[1]|(f[2]<<8))<<16>>16; OUT.erg.push(((NOW-T0)/1000).toFixed(0)+'s:'+TR.erg); } } };
-sandbox.__nus = { writeValue: async f => { f=[...f]; if(f[0]!==26) return; liveVer++; if(f[1]===3) lvl=f[2]; else if(SET[f[2]]){ if(f[1]===0) SET[f[2]].P=f[3]; if(f[1]===1) SET[f[2]].T=f[3]; if(f[1]===2) SET[f[2]].cap=f[3]*25; } } };
+let loseP = false, gatt = false;    // comme Web Bluetooth : une ecriture GATT a la fois, les autres sont rejetees
+sandbox.__nus = { writeValue: async f => { f=[...f]; if(gatt) throw new Error('GATT operation already in progress'); gatt=true; await new Promise(r=>setImmediate(r)); gatt=false; if(f[0]!==26) return; liveVer++; if(f[1]===3) lvl=f[2]; else if(SET[f[2]]){ if(f[1]===0){ if(process.env.SIM_LOSE_P && f[2]===4 && !loseP){ loseP=true; return; } SET[f[2]].P=f[3]; } if(f[1]===1) SET[f[2]].T=f[3]; if(f[1]===2 && !process.env.SIM_NOCAP) SET[f[2]].cap=f[3]*25; } } };
 ctx('ftmsCtrl = __ftms; trainerDev = {}; ftmsResRange = null; nusRx = __nus;');
 const cad = v => v/3.6/2.30*60*COG/44;
 function pedalOf(pm, l){ let lo=0, hi=2000; for(let i=0;i<50;i++){ const m=(lo+hi)/2; if(wheelL0(m)+PAof(m,l) > pm) hi=m; else lo=m; } return lo; }
@@ -83,12 +84,12 @@ function push04(){
   ctx(`bms = {v:48, i:${(s.pbat/48).toFixed(2)}, p:${s.pbat.toFixed(1)}, soc:80, t:${NOW}}`);
 }
 function push02(){ const dv=new DataView(new ArrayBuffer(16)); dv.setUint8(0,0x02); dv.setUint8(9,1); dv.setUint8(11,0+1); ctx('onNotify')({target:{value:dv}}); }
-function push09(){ const dv=new DataView(new ArrayBuffer(20)); dv.setUint8(0,0x09); dv.setUint8(1,liveVer&0xff); dv.setUint8(2,lvl); const c=SET[lvl]; if(c){ dv.setUint8(3,c.P); dv.setUint8(4,c.T); dv.setUint8(5,c.cap/25); } dv.setUint8(17,OSF?4:1); ctx('onNotify')({target:{value:dv}}); }
+function push09(){ const dv=new DataView(new ArrayBuffer(20)); dv.setUint8(0,0x09); dv.setUint8(1,liveVer&0xff); dv.setUint8(2,lvl); const c=SET[lvl]; if(c){ dv.setUint8(3,c.P); dv.setUint8(4,c.T); dv.setUint8(5,c.cap/25); } dv.setUint8(15,SET[4].cap/25); dv.setUint8(16,SET[5].cap/25); dv.setUint8(18,40); dv.setUint8(17,OSF?4:1); ctx('onNotify')({target:{value:dv}}); }
 function human(){
   const p = ctx('proto'); if(!p) return;
   const st = p.steps[p.idx]; if(!st) return;
   mass = 0; extraKg = 0;
-  if(st.kind==='zero'){ vTarget=0; return; }
+  if(st.kind==='zero' || st.kind==='osfset'){ vTarget=0; return; }
   if(st.kind==='static'){ vTarget=0; const D=p.dst; if(D.armed && NOW-p.t0>2000) mass=st.kg; return; }
   if(st.kind==='level'){ vTarget = 12; return; }
   if(st.kind==='plateau') vTarget = LENT ? st.vT+6 : st.vT;
@@ -120,6 +121,7 @@ const T0 = NOW;
   ctx("$('sCog').value='17'");
   ctx('startProtoS()');
   const S = ctx('S_CAR.runs.'+RUN); if(S.cog) COG = S.cog;
+  if(process.env.SIM_COG) COG = +process.env.SIM_COG;      // mauvais braquet : alerte attendue
   let guard = 0;
   while(ctx('proto') && guard++ < 900) await advance(1000);
   const L = sandbox.window._lastProto;

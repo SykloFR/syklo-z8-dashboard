@@ -218,7 +218,7 @@
         masses kg <input id="sCarMasses" size="6" value="9,18,70">
         manivelle mm <input id="sCarCrank" size="3" value="170">
         capteur pas/kg <input id="sCarK" size="4" value="" placeholder="T0">
-        <span title="OSF seulement, posé en RAM par l'écran 2.19.4-banc (opcode 26) : P/T/plafond en W lus, L4 puis L5. Plafond lu = réel × 1,077.">OSF L4,L5 P/T/W <input id="sCarOsf" size="16" value="97/72/350,174/129/625"></span></label>
+        <span title="OSF seulement, posé en RAM par l'écran 2.19.4-banc (opcode 26) : P/T/plafond en W lus, L4 puis L5. Plafond lu = réel × ~1,15 (mesuré le 05/11 : 350 lus, 305 W BMS).">OSF L4,L5 P/T/W <input id="sCarOsf" size="16" value="104/77/375,180/134/650"></span></label>
       <label class="sp">niveau <select id="sLvl"><option value="auto">courant (display)</option>
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
       <label class="sp" title="vitesses des paliers assistés (et du L0 de contrôle en fin de séance : la 1re)">paliers km/h <input id="sSpeeds" size="8" value="25,18"></label>
@@ -2712,6 +2712,7 @@ const S_DYN={launchV:32, launchMax:20, after:3, pushV:28, pushes:2, pushS:5, rel
 const S_CAR={ runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, C79:{cog:17, v:28}, DEP:{cog:17}, REP:{cog:17} },
   settleMin:10, settleMax:30, tol:0.04, stable:25, maxS:60, budgetS:300, servoS:4, gain:0.5, stepMax:50, ergMin:40, ergMax:1000,
   erg0:{'0-150':105, '4-100':230, '4-150':385, '5-100':340, '5-150':560},
+  gear:{13:'vitesse 8 (13T)', 17:'vitesse 6 (17T)'},   // CUES 11-13-15-17-20-23-28-34-41
   erg0Osf:{'0-150':105, '4-100':345, '4-150':385, '5-100':550, '5-150':590},   // plateau : ERG ≈ roue L0 + 0,8 × plafond réel
   depKg:25, pushKg:12, reps:3, kgSat:30,
   dyn:{launchV:22, launchMax:12, after:2, pushV:22, pushes:3, pushS:5, relS:6, settleS:3} };
@@ -2720,13 +2721,19 @@ const S_DYN_BASE={...S_DYN};
 const moy=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
 /* OSF plateau (décision Yanni 05/11, hypothèse B) : hybride, plafond batterie réel 320 W en L4 et 575 W en L5, atteint
    dès ~80 W cycliste, 100 et 150 W reçoivent la même assistance. P = 26,8 × plafond lu / (80 × 1,21) : la voie puissance
-   de l'OSF estime le couple à 0,61 N·m/pas contre 0,505 réels (3,3 pas/kg, 170 mm). T = 0,745 × P. Plafond lu = réel × 1,077. */
+   de l'OSF estime le couple à 0,61 N·m/pas contre 0,505 réels (3,3 pas/kg, 170 mm). T = 0,745 × P. Plafond lu = réel × ~1,15 (05/11 : 350 lus, 305 W BMS). */
 function carOsfSet(){
   const q=$('sCarOsf').value.split(',').map(x=>x.split('/').map(Number));
   if(q.length!==2 || q.some(a=>a.length!==3 || a.some(v=>!(v>0)) || a[2]%25)) return null;
   return {4:{P:q[0][0],T:q[0][1],capW:q[0][2]}, 5:{P:q[1][0],T:q[1][1],capW:q[1][2]}};
 }
 const carPed=(tq,cad,c)=>(tq-c.zero)/c.k*9.81*c.crank/1000*cad*2*Math.PI/60;
+/* Une écriture GATT à la fois : envoyés dans le même tick, T et le plafond étaient rejetés (run du 05/11, 52 s sans plafond). */
+async function carOsfPose(p, lvls){
+  if(p.carBusy) return; p.carBusy=true;
+  try{ for(const l of lvls){ const w=p.car.osf[l]; await liveSend(0,l,w.P); await liveSend(1,l,w.T); await liveSend(2,l,w.capW/25); } }
+  finally{ p.carBusy=false; }
+}
 function carPlateau(lvl, ped, run){
   const v=run.v, erg=ped?(isStock()?S_CAR.erg0:S_CAR.erg0Osf)[lvl+'-'+ped]:S_CAR.ergMin;
   return {id:'S-L'+lvl+(ped?'-p'+ped:'-min')+'-v'+v, kind:'plateau', car:true, lvl, vT:v, erg, res:null, grade:null, pedT:ped||null,
@@ -2744,7 +2751,8 @@ function carSteps(p){
         instr:'Manivelle '+side+' <b>horizontale vers l’avant</b>, plateau bloqué : suspendez <b>'+kg+' kg</b> à l’axe de la pédale '+side+', lâchez, ne touchez plus. Retirez la masse quand le bip sonne.'});
     return {steps, speeds:[]};
   }
-  const steps=[lv(0), {id:'S-zero', kind:'zero', dur:0, title:'Zéro du capteur', instr:'À l’arrêt, <b>pieds hors des pédales</b>, 3 s.'}];
+  const steps=[lv(0), {id:'S-zero', kind:'zero', dur:0, title:'Zéro du capteur', instr:'À l’arrêt, <b>pieds hors des pédales</b>, 3 s.'+(run.cog?' Braquet du run : <b>'+S_CAR.gear[run.cog]+'</b>.':'')}];
+  if(!isStock()) steps.push({id:'S-osf', kind:'osfset', dur:0, title:'Réglages OSF L4 et L5', instr:'<b>Restez à l’arrêt</b> : P, T et plafond sont posés et relus avant de pédaler.'});
   if(run.v){
     steps.push(carPlateau(0,0,run), carPlateau(0,150,run));
     for(const l of [4,5]) steps.push(lv(l), carPlateau(l,100,run), carPlateau(l,150,run));
@@ -2803,7 +2811,9 @@ function carPreflight(R){
   if(R==='T0'){ if(lastSpdX10){ alert('T0 : vélo à l’arrêt.'); return false; } return true; }
   if(!isStock()){
     if(!live || !liveFresh(now) || !(live.motor>=4)){ alert('OSF : il faut l’écran 2.19.4-banc en préréglage Z8-OSF (paquet 0x09) pour poser P, T et le plafond.'); return false; }
-    if(!carOsfSet()){ alert('Réglages OSF illisibles : format P/T/W,P/T/W, plafond multiple de 25.'); return false; }
+    const w=carOsfSet();
+    if(!w){ alert('Réglages OSF illisibles : format P/T/W,P/T/W, plafond multiple de 25.'); return false; }
+    if(live.pmaxW && Math.max(w[4].capW,w[5].capW)>live.pmaxW){ alert('Plafond demandé au-dessus de la puissance max de l’écran ('+live.pmaxW+' W) : il serait refusé.'); return false; }
   }
   if(!(+$('sCarK').value>0)){ alert('Échelle du capteur inconnue : faites le run T0, ou saisissez une estimation (stock ~2,8 ; OSF 3,3 pas/kg).'); return false; }
   if(!ftmsCtrl){ alert('Contrôle FTMS du trainer indispensable.'); return false; }
@@ -3030,6 +3040,8 @@ function sStepResult(p, st){
   const now=Date.now(), base={id:st.id, kind:st.kind, lvl:st.lvl};
   if(st.kind==='level')
     return {...base, v:(curLvl===st.lvl?'OK':'ATT'), d:'niveau display '+curLvl+(curLvl===st.lvl?'':' (attendu '+st.lvl+')')};
+  if(st.kind==='osfset')
+    return {...base, v:'OK', d:'réglages posés : '+[4,5].map(l=>'L'+l+' '+p.car.osf[l].P+'/'+p.car.osf[l].T+'/'+p.car.osf[l].capW).join(', ')};
   if(st.kind==='zero')
     return {...base, v:p.car.zero!=null?'OK':'KO', d:p.car.zero!=null?'zéro capteur '+p.car.zero:'zéro non acquis (vélo immobile, pieds hors des pédales ?)'};
   if(st.kind==='static')
@@ -3193,18 +3205,31 @@ function protoTickS(){
     if(el>=90){ beep(3); return nextStepS(); }
     return;
   }
+  if(st.kind==='osfset'){
+    const W=p.car.osf, D=p.dst, capOk=l=>live&&liveFresh(now)&&live.caps[l-1]===W[l].capW, ok=capOk(4)&&capOk(5);
+    if(lastSpdX10){ pr.textContent='ARRÊTEZ-VOUS : réglages OSF d’abord'; pr.style.background='#7a1f1c'; p.t0=now; return; }
+    if(!D.armed || (!ok && now-D.since>=2500)){ D.armed=true; D.since=now; D.reached=null; carOsfPose(p,[4,5]).then(()=>{ D.reached=Date.now(); }); }
+    pr.textContent='RÉGLAGES OSF EN COURS — plafonds lus L4 '+(live?live.caps[3]:'?')+' / '+W[4].capW+' · L5 '+(live?live.caps[4]:'?')+' / '+W[5].capW; pr.style.background='#7a5c12';
+    $('pStepLeft').textContent=fmtT(20-el); $('pBarStep').style.width='0%';
+    if(ok && D.reached && Date.now()-D.reached>=1200){ beep(1); return nextStepS(); }
+    if(el>=20){ beep(3); alert('Réglages OSF non confirmés par l’écran (code refus '+(live?live.refuse:'?')+', puissance max '+(live?live.pmaxW:'?')+' W) : run arrêté, ne pédalez pas.'); return endProtoS(true); }
+    return;
+  }
   if(st.kind==='level'){
     const want=p.car&&p.car.osf?p.car.osf[st.lvl]:null, setOk=!want||(live&&liveFresh(now)&&live.lvl===st.lvl&&live.P===want.P&&live.T===want.T&&live.capW===want.capW);
     const ok = curLvl===st.lvl && setOk;
     if(!ok && p.car && live && liveFresh(now) && now-(p.lvlT||0)>=1500){ p.lvlT=now;   // niveau et réglages OSF posés par BLE (RAM), confirmés par le 0x09
       if(curLvl!==st.lvl) liveSend(3, st.lvl, 0);
-      else if(want){ liveSend(0, st.lvl, want.P); liveSend(1, st.lvl, want.T); liveSend(2, st.lvl, want.capW/25); } }
-    pr.textContent = ok ? 'niveau '+st.lvl+' ✓' : 'NIVEAU '+st.lvl+' ATTENDU — display au niveau '+curLvl;
+      else if(want) carOsfPose(p,[st.lvl]); }
+    if(want && curLvl===st.lvl && !setOk){ const D=p.dst, nx=p.steps[p.idx+1];   // jamais de réglage manquant sous la charge de L0 : après 5 s, charge du palier suivant
+      if(D.since==null) D.since=now;
+      if(!D.armed && now-D.since>=5000 && nx && nx.car && nx.erg){ D.armed=true; trainerTargetPowerW(nx.erg); } }
+    pr.textContent = ok ? 'niveau '+st.lvl+' ✓' : curLvl===st.lvl ? 'RÉGLAGES L'+st.lvl+' EN COURS — P '+(live?live.P:'?')+' / '+want.P+' · T '+(live?live.T:'?')+' / '+want.T+' · plafond '+(live?live.capW:'?')+' / '+want.capW : 'NIVEAU '+st.lvl+' ATTENDU — display au niveau '+curLvl;
     pr.style.background = ok ? '#1e6b3f' : '#7a5c12';
     if(!ok) p.t0=now;                     // 3 s de confirmation au bon niveau
     $('pStepLeft').textContent = ok ? fmtT(3-el) : 'en attente';
     $('pBarStep').style.width='0%';
-    if(ok && el>=(p.car?1.5:3)){ beep(1); return nextStepS(); }
+    if(ok && el>=(want?0:p.car?1.5:3)){ beep(1); return nextStepS(); }   // OSF : charge du palier tout de suite, le niveau est déjà assisté
   } else if(st.kind==='plateau'){
     const spd=lastSpdX10/10, dev=Math.abs(spd-st.vT), cum=p.cum/1000, stableS=st.stableS??p.params.stable, maxS=st.maxS??p.params.max;
     if(st.pedT && !p.servoDone && now-p.t0>=5000 && now-p.ergT>=S_CAR.servoS*1000 && dev<=p.params.band*2) carServo(p, st, now);
@@ -3212,6 +3237,12 @@ function protoTickS(){
     pr.textContent = spd.toFixed(1)+' km/h  →  '+st.vT+'   ·   '+(settling?'établissement…':'acquis '+Math.floor(cum)+' / '+stableS+' s')+(st.car?' · ERG '+p.ergNow+' W'+(p.pedNow!=null?' · cycliste '+p.pedNow.toFixed(0)+' W':''):'');
     if(curLvl!==st.lvl) pr.textContent='NIVEAU '+st.lvl+' ATTENDU (display '+curLvl+')  ·  '+pr.textContent;
     pr.style.background = curLvl!==st.lvl ? '#7a1f1c' : dev<=p.params.band ? '#1e6b3f' : dev<=p.params.band*2 ? '#7a5c12' : '#7a1f1c';
+    if(st.car){   // braquet : tcad (Rivo) contre cadence calculée, 5 s de suite
+      const ce=cadEst(lastSpdX10), off=trCad>15 && trT && now-trT<3000 && dev<=p.params.band && ce>15 && Math.abs(trCad/ce-1)>0.10;
+      p.brqT=off?(p.brqT||now):null;
+      if(p.brqT && now-p.brqT>=5000){ pr.textContent='BRAQUET ? '+(S_CAR.gear[sGear.cog]||sGear.cog+'T')+' attendu · Rivo '+trCad+' rpm, calculé '+ce.toFixed(0)+' rpm  ·  '+pr.textContent; pr.style.background='#7a1f1c';
+        if(!p.brqBeep){ p.brqBeep=true; beep(3); } }
+    }
     $('pStepLeft').textContent=fmtT(maxS-el)+' max';
     $('pBarStep').style.width=Math.min(100,cum/stableS*100)+'%';
     if(cum>=stableS){ beep(2); return nextStepS(); }
@@ -4018,7 +4049,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-11-05b';
+const DASH_VERSION = '2026-11-05c';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
