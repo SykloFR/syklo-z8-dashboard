@@ -17,7 +17,7 @@ const els = {};
 function el(id){
   if(!els[id]) els[id] = { id, textContent:'', innerHTML:'', value:'0', max:'100', hidden:false, disabled:false,
     className:'', style:{}, classList:{toggle(){}, add(){}, remove(){}}, addEventListener(){}, onclick:null, appendChild(){},
-    checked:false, nextElementSibling:{textContent:''}, getContext: () => new Proxy({}, {get:()=>()=>{}}), width:1200, height:220 };
+    checked:false, nextElementSibling:{textContent:''}, getContext: () => new Proxy({}, {get:(o,k)=>k==='measureText'?(()=>({width:10})):(()=>{}), set:()=>true}), width:1200, height:220 };
   return els[id];
 }
 el('trMode').value = 'res'; el('trVal').value = '20'; el('balLimits').value = '{}'; el('balPlan').value = '[]';

@@ -176,7 +176,7 @@
   <div class="tile" id="tTq10" hidden><div class="l">Couple 10 bits</div><div class="v" id="vTq10">–</div><div class="u">capteur brut (v4)</div></div>
   <div class="tile" id="tCadS" hidden><div class="l">Cadence capteur</div><div class="v" id="vCadS">–</div><div class="u" id="vCadSU">imp/s (compteur mod 127, v4)</div></div>
   <div class="tile" id="tFw" hidden><div class="l">Roue libre</div><div class="v" id="vFw">–</div><div class="u">bascules/s du bit 7 (v4)</div></div>
-  <div class="tile" id="tP27" hidden><div class="l">P2.7 contrôleur</div><div class="v" id="vP27">–</div><div class="u" id="vP27U">–</div></div>
+  <div class="tile" id="tP27" hidden><div class="l">Temp. contrôleur</div><div class="v" id="vP27">–</div><div class="u" id="vP27U">–</div></div>
   <div class="tile" id="tPeak" hidden><div class="l">Pic courant</div><div class="v" id="vPeak">–</div><div class="u" id="vPeakU">–</div></div>
   <div class="tile" id="tDiag" hidden><div class="l">Diag moteur</div><div class="v" id="vDiag">–</div><div class="u" id="vDiagU">–</div></div>
   <div class="tile" id="tSTemp" hidden><div class="l">Temp. capteur</div><div class="v" id="vSTemp">–</div><div class="u">6 bits bruts (v4)</div></div>
@@ -190,6 +190,8 @@
 </div>
 
 <canvas id="chart" width="1200" height="220"></canvas>
+<canvas id="chart2" width="1200" height="220"></canvas>
+<div class="legend" id="legend2">Fenêtre 15 min — <b style="color:#ff7043">Contrôleur °C</b> (P2.7, modèle NTC du stock, non calé) · <b style="color:#ffd166">BMS °C</b> · <b style="color:#4da3ff">Tension BMS</b> · <b style="color:#4cd07d">Tension écran</b> (compensée I×R) · <b style="color:#c58af0">Puissance batterie</b></div>
 <div class="legend">Fenêtre 60 s — <b style="color:#4da3ff">ADC torque</b> ·
 <b style="color:#4cd07d">duty</b> · <b style="color:#f0b429">courant ADC</b> · <b style="color:#c58af0">ERPS/2</b> ·
 <b style="color:#ff7ab6">puissance roue</b> (home trainer).</div>
@@ -221,7 +223,7 @@
         masses kg <input id="sCarMasses" size="6" value="9,18,70">
         manivelle mm <input id="sCarCrank" size="3" value="170">
         capteur pas/kg <input id="sCarK" size="4" value="" placeholder="T0">
-        <span title="OSF seulement, posé en RAM par l'écran 2.19.4-banc (opcode 26) : P/T/plafond en W lus, L4 puis L5. Plafond lu = réel × ~1,08 attendu en 1.8.3 : à recaler sur le BMS.">OSF L4,L5 P/T/W <input id="sCarOsf" size="16" value="104/77/350,180/134/625"></span></label>
+        <span title="OSF seulement, posé en RAM par l'écran 2.19.4-banc (opcode 26) : P/T/plafond en W lus, L4 puis L5. Plafond lu = réel × ~1,08 attendu en 1.8.3 : à recaler sur le BMS.">OSF L4,L5 P/T/W <input id="sCarOsf" size="16" value="104/77/375,186/139/675"></span></label>
       <label class="sp">niveau <select id="sLvl"><option value="auto">courant (display)</option>
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
       <label class="sp" title="vitesses des paliers assistés (et du L0 de contrôle en fin de séance : la 1re)">paliers km/h <input id="sSpeeds" size="8" value="25,18"></label>
@@ -477,6 +479,8 @@ const $ = id => document.getElementById(id);
 let recording = false, log = [], lastSeq = null, pkts = 0, lost = 0;
 let cfg = {};                // dernier état config connu (fusion des sous-trames)
 const hist = []; const HIST_MS = 60000;
+const hist2 = []; const HIST2_MS = 900000;   // températures, tensions, puissance : 1 point/s
+const p27C = v => { const r = Math.min(Math.max(v, 1), 4094); return 1 / (Math.log(r / (4095 - r)) / 3360 + 1 / 298.15) - 273.15; };   // NTC 10 k, B 3360, tirage 10 k
 const MOTORS = { 0:'Z2', 1:'Z8 48V', 2:'RD45', 3:'Z8 36V', 4:'Z8-OSF 48V', 5:'Z8-OSF 36V' };
 const MODES  = { 0:'power', 1:'torque', 2:'cadence', 3:'eMTB', 4:'hybrid' };
 
@@ -862,8 +866,7 @@ function handle04(dv) {
   $('vErps').textContent=na?'n/a':d.erps; $('vFoc').textContent=na?'n/a':d.foc;
   $('vCur').textContent=d.cur; $('vVolt').textContent=(d.voltX10/10).toFixed(1);
   if (d.p27 != null) {   // estimation : NTC 10 k, B 3360, tirage 10 k (table stock), sonde non confirmée
-    const pr = Math.min(Math.max(d.p27, 1), 4094), pt = 1 / (Math.log(pr / (4095 - pr)) / 3360 + 1 / 298.15) - 273.15;
-    $('tP27').hidden = false; $('vP27').textContent = d.p27; $('vP27U').textContent = '≈ ' + pt.toFixed(0) + ' °C si NTC';
+    $('tP27').hidden = false; $('vP27').textContent = p27C(d.p27).toFixed(1) + ' °C'; $('vP27U').textContent = 'brut ' + d.p27 + (bms && bms.ntc && bms.ntc.length ? ' · BMS ' + bms.ntc.join(' / ') + ' °C' : '') + ' · non calé';
   }
   if (d.peak != null) { $('tPeak').hidden = false; $('vPeak').textContent = d.peak >= 496 ? '≥ 496' : d.peak; $('vPeakU').textContent = '≈ ' + (d.peak * 0.16).toFixed(0) + ' A lus, coupure à 281' + (d.hglitch != null ? ' · parasites Hall ' + (d.hglitch >= 124 ? '≥ 124' : d.hglitch) + ' / 2 s' : ''); }
   if (!na && live && live.diag != null) {
@@ -898,6 +901,11 @@ function handle04(dv) {
   $('vCadEst').textContent = d.spdX10 ? cadEst(d.spdX10).toFixed(0) : '0';
   hist.push({ t:now, torque:d.torque, duty:d.duty, cur:d.cur, erps:d.erps, err:d.err, pmeca:pmeca??0});
   while (hist.length && now-hist[0].t > HIST_MS) hist.shift();
+  if (!hist2.length || now-hist2[hist2.length-1].t >= 1000) {
+    hist2.push({ t:now, tc:d.p27!=null?p27C(d.p27):null, tb:bms&&bms.ntc&&bms.ntc.length?Math.max(...bms.ntc):null,
+      vb:bms&&now-bms.t<3000?bms.v:null, vd:d.voltX10?d.voltX10/10:null, pw:bms&&now-bms.t<3000?Math.max(bms.p,0):null });
+    while (hist2.length && now-hist2[0].t > HIST2_MS) hist2.shift();
+  }
   // bset = consigne de duty envoyée en mode banc, pour corréler consigne / duty remonté
   // stb = 1 pendant une fenêtre stable de la phase S ; vbat/ibat/pbat = BMS JBD (si connecté, < 3 s)
   // t = temps reconstruit sur seq quand les paquets arrivent en rafale (tr = 1, ta = réception réelle) ;
@@ -970,7 +978,28 @@ function drawChart() {
     }
     g.stroke();
   }
+  drawChart2();
   requestAnimationFrame(drawChart);
+}
+function drawChart2() {
+  const c=$('chart2'); if(!c) return;
+  const g=c.getContext('2d'), W=c.width, H=c.height, now=Date.now(), L=hist2[hist2.length-1];
+  g.clearRect(0,0,W,H); g.font='12px sans-serif';
+  const series=[{k:'tc',col:'#ff7043',lo:0,hi:80,u:'°C'},{k:'tb',col:'#ffd166',lo:0,hi:80,u:'°C'},
+    {k:'vb',col:'#4da3ff',lo:40,hi:56,u:'V'},{k:'vd',col:'#4cd07d',lo:40,hi:56,u:'V'},{k:'pw',col:'#c58af0',lo:0,hi:1200,u:'W'}];
+  const yOf=(s,v)=>H-Math.min(Math.max((v-s.lo)/(s.hi-s.lo),0),1)*(H-24)-12;
+  g.strokeStyle='rgba(128,128,128,.25)'; g.lineWidth=1;
+  for (let i=0;i<=4;i++){ const y=12+i*(H-24)/4; g.beginPath(); g.moveTo(0,y); g.lineTo(W,y); g.stroke();
+    g.fillStyle='#8a94a6'; g.fillText((80-i*20)+' °C · '+(56-i*4)+' V · '+(1200-i*300)+' W', 6, y-2); }
+  for (const s of series) {
+    g.beginPath(); g.strokeStyle=s.col; g.lineWidth=1.8; let on=false;
+    for (const p of hist2) { const v=p[s.k]; if(v==null){ on=false; continue; }
+      const x=W-(now-p.t)/HIST2_MS*W, y=yOf(s,v); on?g.lineTo(x,y):(g.moveTo(x,y),on=true); }
+    g.stroke();
+  }
+  let x=W-6; g.textAlign='right';
+  for (const s of series.slice().reverse()) { const v=L?L[s.k]:null; if(v==null) continue; const t=v.toFixed(s.u==='W'?0:1)+' '+s.u; g.fillStyle=s.col; g.fillText(t,x,14); x-=g.measureText(t).width+14; }
+  g.textAlign='left';
 }
 drawChart();
 
@@ -2756,7 +2785,7 @@ const S_DYN={launchV:32, launchMax:20, after:3, pushV:28, pushes:2, pushS:5, rel
    Rivo ~80 W roue à 22 km/h) : FW0(100) est extrapolée entre le plancher et 150 W, et signalée.
    Le capteur stock sature vers 190 (+100 pas) : les masses > 30 kg servent à voir la compression,
    jamais à calculer k. Thermique et cooldown hors champ (décision Yanni 05/11) : cooling down OFF. */
-const S_CAR={ reserveS:40, runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, C79:{cog:17, v:28}, DEP:{cog:17}, REP:{cog:17} },
+const S_CAR={ reserveS:0, runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, C79:{cog:17, v:28}, DEP:{cog:17}, REP:{cog:17} },
   settleMin:10, settleMax:30, settleMaxOsf:20, tol:0.04, stable:25, maxS:60, budgetS:300, servoS:4, gain:0.5, stepMax:50, ergMin:40, ergMax:1000,
   erg0:{'0-150':105, '4-100':230, '4-150':385, '5-100':340, '5-150':560},
   gear:{13:'vitesse 8 (13T)', 17:'vitesse 6 (17T)'},   // CUES 11-13-15-17-20-23-28-34-41
@@ -4096,7 +4125,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-11-06c';
+const DASH_VERSION = '2026-11-06d';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
