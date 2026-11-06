@@ -528,7 +528,7 @@ let motorSrc = null;                 // dernier octet 19 reçu (null = display <
 const srcProto = () => motorSrc == null ? null : (motorSrc & 0x0f);
 const isStock  = () => srcProto() === 2;
 
-let lastP27 = null, lastPeak = null, lastFoc = 0;   // moteur 1.8.3 (P54, P55) : octet FOC, 10xxxxxx = P2.7 >> 6, 11xxxxxx = pic de courant >> 3
+let lastP27 = null, lastPeak = null, lastGlitch = null, lastFoc = 0;   // moteur 1.8.4 (P54, P55) : octet FOC, 10xxxxxx = P2.7 >> 6, 110xxxxx = pic >> 4, 111xxxxx = parasites Hall sur 2 s >> 2
 function decode04raw(dv) {
   const r = { seq:dv.getUint8(1), torque:dv.getUint16(2,true), delta:dv.getUint16(4,true),
     // duty : le moteur le remonte deja converti en % 0-100 (ebike_app.c,
@@ -539,11 +539,13 @@ function decode04raw(dv) {
     hall:dv.getUint8(16), spdX10:dv.getUint16(17,true),
     src: dv.byteLength >= 20 ? dv.getUint8(19) : null };
   if (r.src == null || (r.src & 0x0f) !== 2) {   // en stock cet octet est un compteur d'erreurs UART
-    if (r.foc >= 192) { lastPeak = (r.foc & 63) << 3; r.foc = lastFoc; }
+    if (r.foc >= 224) { lastGlitch = (r.foc & 31) << 2; r.foc = lastFoc; }
+    else if (r.foc >= 192) { lastPeak = (r.foc & 31) << 4; r.foc = lastFoc; }
     else if (r.foc >= 128) { lastP27 = (r.foc & 63) << 6; r.foc = lastFoc; }
     else lastFoc = r.foc;
     if (lastP27 != null) r.p27 = lastP27;
     if (lastPeak != null) r.peak = lastPeak;
+    if (lastGlitch != null) r.hglitch = lastGlitch;
   }
   return r;
 }
@@ -863,7 +865,7 @@ function handle04(dv) {
     const pr = Math.min(Math.max(d.p27, 1), 4094), pt = 1 / (Math.log(pr / (4095 - pr)) / 3360 + 1 / 298.15) - 273.15;
     $('tP27').hidden = false; $('vP27').textContent = d.p27; $('vP27U').textContent = '≈ ' + pt.toFixed(0) + ' °C si NTC';
   }
-  if (d.peak != null) { $('tPeak').hidden = false; $('vPeak').textContent = d.peak >= 504 ? '≥ 504' : d.peak; $('vPeakU').textContent = '≈ ' + (d.peak * 0.16).toFixed(0) + ' A lus, coupure à 281'; }
+  if (d.peak != null) { $('tPeak').hidden = false; $('vPeak').textContent = d.peak >= 496 ? '≥ 496' : d.peak; $('vPeakU').textContent = '≈ ' + (d.peak * 0.16).toFixed(0) + ' A lus, coupure à 281' + (d.hglitch != null ? ' · parasites Hall ' + (d.hglitch >= 124 ? '≥ 124' : d.hglitch) + ' / 2 s' : ''); }
   if (!na && live && live.diag != null) {
     $('tDiag').hidden = false; $('vDiag').textContent = live.diag ? '0x' + live.diag.toString(16) : 'OK';
     $('vDiagU').textContent = (MOTOR_DIAG.filter(([m]) => live.diag & m).map(x => x[1]).join(', ') || 'aucun défaut') + (live.p012 ? ' · P0.12 vue basse' : ' · P0.12 haute');
@@ -2755,7 +2757,7 @@ const S_DYN={launchV:32, launchMax:20, after:3, pushV:28, pushes:2, pushS:5, rel
    Le capteur stock sature vers 190 (+100 pas) : les masses > 30 kg servent à voir la compression,
    jamais à calculer k. Thermique et cooldown hors champ (décision Yanni 05/11) : cooling down OFF. */
 const S_CAR={ reserveS:40, runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, C79:{cog:17, v:28}, DEP:{cog:17}, REP:{cog:17} },
-  settleMin:10, settleMax:30, tol:0.04, stable:25, maxS:60, budgetS:300, servoS:4, gain:0.5, stepMax:50, ergMin:40, ergMax:1000,
+  settleMin:10, settleMax:30, settleMaxOsf:20, tol:0.04, stable:25, maxS:60, budgetS:300, servoS:4, gain:0.5, stepMax:50, ergMin:40, ergMax:1000,
   erg0:{'0-150':105, '4-100':230, '4-150':385, '5-100':340, '5-150':560},
   gear:{13:'vitesse 8 (13T)', 17:'vitesse 6 (17T)'},   // CUES 11-13-15-17-20-23-28-34-41
   erg0Osf:{'0-150':105, '4-100':345, '4-150':385, '5-100':550, '5-150':590},   // plateau : ERG ≈ roue L0 + 0,8 × plafond réel
@@ -2818,7 +2820,7 @@ function carServo(p, st, now){
   const cad=cadEst(med(S.map(x=>x.spdX10))); if(cad<15) return;
   const P=carPed(moy(S.map(x=>x.torque)), cad, p.car), e=st.pedT-P, el=now-p.t0, rivoOk=pmeca!=null&&Math.abs(pmeca-p.ergNow)<=0.05*p.ergNow;
   p.pedNow=P;
-  if((el>=(st.settleS||S_CAR.settleMin)*1000 && Math.abs(e)<=(isStock()?S_CAR.tol:0.10)*st.pedT && rivoOk) || el>=S_CAR.settleMax*1000){ p.servoDone=true; return; }
+  if((el>=(st.settleS||S_CAR.settleMin)*1000 && Math.abs(e)<=(isStock()?S_CAR.tol:0.10)*st.pedT && rivoOk) || el>=(isStock()?S_CAR.settleMax:S_CAR.settleMaxOsf)*1000){ p.servoDone=true; return; }
   const k=isStock()?Math.max(1, (pmeca||0)/Math.max(P,30)):1;   // OSF au plafond : 1 W de cycliste = 1 W de roue, un gain plus fort oscille (essayé à 1,6 en simulation)
   const step=Math.max(-S_CAR.stepMax, Math.min(S_CAR.stepMax, S_CAR.gain*e*k));
   p.ergNow=Math.round(Math.max(S_CAR.ergMin, Math.min(S_CAR.ergMax, p.ergNow+step))); p.ergT=now;
@@ -3279,7 +3281,7 @@ function protoTickS(){
     const spd=lastSpdX10/10, dev=Math.abs(spd-st.vT), cum=p.cum/1000, stableS=st.stableS??p.params.stable, maxS=st.maxS??p.params.max;
     if(st.pedT && !p.servoDone && now-p.t0>=5000 && now-p.ergT>=S_CAR.servoS*1000 && dev<=p.params.band*2) carServo(p, st, now);
     const settling = st.car ? (!p.servoDone || now-p.t0<(st.settleS||S_CAR.settleMin)*1000) : now-p.t0<S_SETTLE;
-    pr.textContent = spd.toFixed(1)+' km/h  →  '+st.vT+'   ·   '+(settling?'établissement…':'acquis '+Math.floor(cum)+' / '+stableS+' s')+(st.car?' · ERG '+p.ergNow+' W'+(p.pedNow!=null?' · cycliste '+p.pedNow.toFixed(0)+' W':''):'');
+    pr.textContent = spd.toFixed(1)+' km/h  →  '+st.vT+'   ·   '+(settling?'établissement '+Math.floor((now-p.t0)/1000)+' / '+(st.settleS||(st.car?(isStock()?S_CAR.settleMax:S_CAR.settleMaxOsf):S_SETTLE/1000))+' s max':'acquis '+Math.floor(cum)+' / '+stableS+' s'+(dev>p.params.band?' (en pause, retournez dans la bande)':''))+(st.car?' · ERG '+p.ergNow+' W'+(p.pedNow!=null?' · cycliste '+p.pedNow.toFixed(0)+' W':''):'');
     if(curLvl!==st.lvl) pr.textContent='NIVEAU '+st.lvl+' ATTENDU (display '+curLvl+')  ·  '+pr.textContent;
     pr.style.background = curLvl!==st.lvl ? '#7a1f1c' : dev<=p.params.band ? '#1e6b3f' : dev<=p.params.band*2 ? '#7a5c12' : '#7a1f1c';
     if(st.car){   // braquet : tcad (Rivo) contre cadence calculée, 5 s de suite
@@ -4094,7 +4096,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-11-06b';
+const DASH_VERSION = '2026-11-06c';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
