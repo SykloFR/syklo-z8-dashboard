@@ -177,6 +177,8 @@
   <div class="tile" id="tCadS" hidden><div class="l">Cadence capteur</div><div class="v" id="vCadS">–</div><div class="u" id="vCadSU">imp/s (compteur mod 127, v4)</div></div>
   <div class="tile" id="tFw" hidden><div class="l">Roue libre</div><div class="v" id="vFw">–</div><div class="u">bascules/s du bit 7 (v4)</div></div>
   <div class="tile" id="tP27" hidden><div class="l">P2.7 contrôleur</div><div class="v" id="vP27">–</div><div class="u" id="vP27U">–</div></div>
+  <div class="tile" id="tPeak" hidden><div class="l">Pic courant</div><div class="v" id="vPeak">–</div><div class="u" id="vPeakU">–</div></div>
+  <div class="tile" id="tDiag" hidden><div class="l">Diag moteur</div><div class="v" id="vDiag">–</div><div class="u" id="vDiagU">–</div></div>
   <div class="tile" id="tSTemp" hidden><div class="l">Temp. capteur</div><div class="v" id="vSTemp">–</div><div class="u">6 bits bruts (v4)</div></div>
   <div class="tile" id="tHallS" hidden><div class="l">Hall (RD45)</div><div class="v" id="vHallS">–</div><div class="u" id="vHallSU">Hall_Speed (v4)</div></div>
   <div class="tile" id="tPages" hidden style="grid-column:span 2"><div class="l">Pages du patch (v4) — dernière valeur · âge</div><table class="pages" id="vPages"></table></div>
@@ -219,7 +221,7 @@
         masses kg <input id="sCarMasses" size="6" value="9,18,70">
         manivelle mm <input id="sCarCrank" size="3" value="170">
         capteur pas/kg <input id="sCarK" size="4" value="" placeholder="T0">
-        <span title="OSF seulement, posé en RAM par l'écran 2.19.4-banc (opcode 26) : P/T/plafond en W lus, L4 puis L5. Plafond lu = réel × ~1,15 (mesuré le 05/11 : 350 lus, 305 W BMS).">OSF L4,L5 P/T/W <input id="sCarOsf" size="16" value="104/77/375,180/134/650"></span></label>
+        <span title="OSF seulement, posé en RAM par l'écran 2.19.4-banc (opcode 26) : P/T/plafond en W lus, L4 puis L5. Plafond lu = réel × ~1,08 attendu en 1.8.3 : à recaler sur le BMS.">OSF L4,L5 P/T/W <input id="sCarOsf" size="16" value="104/77/350,180/134/625"></span></label>
       <label class="sp">niveau <select id="sLvl"><option value="auto">courant (display)</option>
         <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
       <label class="sp" title="vitesses des paliers assistés (et du L0 de contrôle en fin de séance : la 1re)">paliers km/h <input id="sSpeeds" size="8" value="25,18"></label>
@@ -526,7 +528,7 @@ let motorSrc = null;                 // dernier octet 19 reçu (null = display <
 const srcProto = () => motorSrc == null ? null : (motorSrc & 0x0f);
 const isStock  = () => srcProto() === 2;
 
-let lastP27 = null, lastFoc = 0;   // moteur 1.8.2 (P54) : brut de P2.7, porte par l'octet FOC quand bit 7 = 1
+let lastP27 = null, lastPeak = null, lastFoc = 0;   // moteur 1.8.3 (P54, P55) : octet FOC, 10xxxxxx = P2.7 >> 6, 11xxxxxx = pic de courant >> 3
 function decode04raw(dv) {
   const r = { seq:dv.getUint8(1), torque:dv.getUint16(2,true), delta:dv.getUint16(4,true),
     // duty : le moteur le remonte deja converti en % 0-100 (ebike_app.c,
@@ -537,8 +539,11 @@ function decode04raw(dv) {
     hall:dv.getUint8(16), spdX10:dv.getUint16(17,true),
     src: dv.byteLength >= 20 ? dv.getUint8(19) : null };
   if (r.src == null || (r.src & 0x0f) !== 2) {   // en stock cet octet est un compteur d'erreurs UART
-    if (r.foc >= 128) { lastP27 = (r.foc & 127) << 5; r.foc = lastFoc; } else lastFoc = r.foc;
+    if (r.foc >= 192) { lastPeak = (r.foc & 63) << 3; r.foc = lastFoc; }
+    else if (r.foc >= 128) { lastP27 = (r.foc & 63) << 6; r.foc = lastFoc; }
+    else lastFoc = r.foc;
     if (lastP27 != null) r.p27 = lastP27;
+    if (lastPeak != null) r.peak = lastPeak;
   }
   return r;
 }
@@ -857,6 +862,11 @@ function handle04(dv) {
   if (d.p27 != null) {   // estimation : NTC 10 k, B 3360, tirage 10 k (table stock), sonde non confirmée
     const pr = Math.min(Math.max(d.p27, 1), 4094), pt = 1 / (Math.log(pr / (4095 - pr)) / 3360 + 1 / 298.15) - 273.15;
     $('tP27').hidden = false; $('vP27').textContent = d.p27; $('vP27U').textContent = '≈ ' + pt.toFixed(0) + ' °C si NTC';
+  }
+  if (d.peak != null) { $('tPeak').hidden = false; $('vPeak').textContent = d.peak >= 504 ? '≥ 504' : d.peak; $('vPeakU').textContent = '≈ ' + (d.peak * 0.16).toFixed(0) + ' A lus, coupure à 281'; }
+  if (!na && live && live.diag != null) {
+    $('tDiag').hidden = false; $('vDiag').textContent = live.diag ? '0x' + live.diag.toString(16) : 'OK';
+    $('vDiagU').textContent = (MOTOR_DIAG.filter(([m]) => live.diag & m).map(x => x[1]).join(', ') || 'aucun défaut') + (live.p012 ? ' · P0.12 vue basse' : ' · P0.12 haute');
   }
   $('vSpeed').textContent=(d.spdX10/10).toFixed(1); $('vHall').textContent=na?'n/a':d.hall;
   if (na && d.tickRaw !== undefined) {
@@ -2743,7 +2753,7 @@ const S_DYN={launchV:32, launchMax:20, after:3, pushV:28, pushes:2, pushS:5, rel
    Rivo ~80 W roue à 22 km/h) : FW0(100) est extrapolée entre le plancher et 150 W, et signalée.
    Le capteur stock sature vers 190 (+100 pas) : les masses > 30 kg servent à voir la compression,
    jamais à calculer k. Thermique et cooldown hors champ (décision Yanni 05/11) : cooling down OFF. */
-const S_CAR={ runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, C79:{cog:17, v:28}, DEP:{cog:17}, REP:{cog:17} },
+const S_CAR={ reserveS:40, runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, C79:{cog:17, v:28}, DEP:{cog:17}, REP:{cog:17} },
   settleMin:10, settleMax:30, tol:0.04, stable:25, maxS:60, budgetS:300, servoS:4, gain:0.5, stepMax:50, ergMin:40, ergMax:1000,
   erg0:{'0-150':105, '4-100':230, '4-150':385, '5-100':340, '5-150':560},
   gear:{13:'vitesse 8 (13T)', 17:'vitesse 6 (17T)'},   // CUES 11-13-15-17-20-23-28-34-41
@@ -2771,7 +2781,7 @@ async function carOsfPose(p, lvls){
 function carPlateau(lvl, ped, run){
   const v=run.v, erg=ped?(isStock()?S_CAR.erg0:S_CAR.erg0Osf)[lvl+'-'+ped]:S_CAR.ergMin;
   return {id:'S-L'+lvl+(ped?'-p'+ped:'-min')+'-v'+v, kind:'plateau', car:true, lvl, vT:v, erg, res:null, grade:null, pedT:ped||null,
-    dur:S_CAR.stable, stableS:S_CAR.stable, maxS:S_CAR.maxS,
+    dur:S_CAR.stable, stableS:S_CAR.stable, maxS:S_CAR.maxS+((!isStock()&&lvl===4&&ped===100)?S_CAR.reserveS:0), settleS:(!isStock()&&lvl===4&&ped===100)?S_CAR.reserveS:null,
     title:(ped?'Niveau '+lvl+' — cycliste '+ped+' W':'Niveau 0 — charge minimale du trainer')+' à '+v+' km/h',
     instr:'Tenez <b>'+v+' km/h</b> (≈ '+cadEst(v*10).toFixed(0)+' rpm), assis, régulier, <b>sans relancer</b>.'
       +(ped?' Le trainer ajuste seul sa charge jusqu’à '+ped+' W cycliste, puis se fige pour la mesure.':' Pédalez juste assez pour tenir la vitesse.')};
@@ -2807,7 +2817,7 @@ function carServo(p, st, now){
   const cad=cadEst(med(S.map(x=>x.spdX10))); if(cad<15) return;
   const P=carPed(moy(S.map(x=>x.torque)), cad, p.car), e=st.pedT-P, el=now-p.t0, rivoOk=pmeca!=null&&Math.abs(pmeca-p.ergNow)<=0.05*p.ergNow;
   p.pedNow=P;
-  if((el>=S_CAR.settleMin*1000 && Math.abs(e)<=(isStock()?S_CAR.tol:0.10)*st.pedT && rivoOk) || el>=S_CAR.settleMax*1000){ p.servoDone=true; return; }
+  if((el>=(st.settleS||S_CAR.settleMin)*1000 && Math.abs(e)<=(isStock()?S_CAR.tol:0.10)*st.pedT && rivoOk) || el>=S_CAR.settleMax*1000){ p.servoDone=true; return; }
   const k=isStock()?Math.max(1, (pmeca||0)/Math.max(P,30)):1;   // OSF au plafond : 1 W de cycliste = 1 W de roue, un gain plus fort oscille (essayé à 1,6 en simulation)
   const step=Math.max(-S_CAR.stepMax, Math.min(S_CAR.stepMax, S_CAR.gain*e*k));
   p.ergNow=Math.round(Math.max(S_CAR.ergMin, Math.min(S_CAR.ergMax, p.ergNow+step))); p.ergT=now;
@@ -3199,7 +3209,7 @@ function sInBand(p, st, d){ return st && st.kind==='plateau' && Math.abs(d.spdX1
 function sCounted(p, d, now){
   const st=p.steps[p.idx];
   return sInBand(p, st, d) && p.inSince!=null && now-p.inSince>=S_DEBOUNCE
-      && (st.car ? (p.servoDone && now-p.t0>=S_CAR.settleMin*1000) : now-p.t0>=S_SETTLE);
+      && (st.car ? (p.servoDone && now-p.t0>=(st.settleS||S_CAR.settleMin)*1000) : now-p.t0>=S_SETTLE);
 }
 function protoSampleS(d,now,st){
   const p=proto, c=sCounted(p, d, now);
@@ -3223,7 +3233,7 @@ function protoTickS(){
     $('pWait').textContent='⚠ Télémétrie interrompue — reconnectez le SW102 (bouton en haut), le chrono est en pause.'; }
   else $('pWait').hidden=true;
   const el=(now-p.t0)/1000, pr=$('pPrompt'); pr.hidden=false; pr.style.color='#fff';
-  if(p.car && p.car.run!=='T0' && now-p.car.t0>=S_CAR.budgetS*1000){ p.budget=true; beep(3); return endProtoS(true); }   // 5 min maximum, quoi qu'il arrive
+  if(p.car && p.car.run!=='T0' && now-p.car.t0>=(S_CAR.budgetS+(isStock()?0:S_CAR.reserveS))*1000){ p.budget=true; beep(3); return endProtoS(true); }   // 5 min maximum, quoi qu'il arrive
   if(st.kind==='zero' || st.kind==='static'){
     const W=p.samples.filter(x=>x.t>=now-3000 && x.torque!=null), v=W.map(x=>x.torque), span=W.length>=10?mx(v)-Math.min(...v):1e9, tq=lastTorque, D=p.dst;
     $('pStepLeft').textContent=fmtT(st.kind==='zero'?25-el:90-el); $('pBarStep').style.width='0%';
@@ -3267,7 +3277,7 @@ function protoTickS(){
   } else if(st.kind==='plateau'){
     const spd=lastSpdX10/10, dev=Math.abs(spd-st.vT), cum=p.cum/1000, stableS=st.stableS??p.params.stable, maxS=st.maxS??p.params.max;
     if(st.pedT && !p.servoDone && now-p.t0>=5000 && now-p.ergT>=S_CAR.servoS*1000 && dev<=p.params.band*2) carServo(p, st, now);
-    const settling = st.car ? (!p.servoDone || now-p.t0<S_CAR.settleMin*1000) : now-p.t0<S_SETTLE;
+    const settling = st.car ? (!p.servoDone || now-p.t0<(st.settleS||S_CAR.settleMin)*1000) : now-p.t0<S_SETTLE;
     pr.textContent = spd.toFixed(1)+' km/h  →  '+st.vT+'   ·   '+(settling?'établissement…':'acquis '+Math.floor(cum)+' / '+stableS+' s')+(st.car?' · ERG '+p.ergNow+' W'+(p.pedNow!=null?' · cycliste '+p.pedNow.toFixed(0)+' W':''):'');
     if(curLvl!==st.lvl) pr.textContent='NIVEAU '+st.lvl+' ATTENDU (display '+curLvl+')  ·  '+pr.textContent;
     pr.style.background = curLvl!==st.lvl ? '#7a1f1c' : dev<=p.params.band ? '#1e6b3f' : dev<=p.params.band*2 ? '#7a5c12' : '#7a1f1c';
@@ -4083,7 +4093,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-11-05-soc';
+const DASH_VERSION = '2026-11-06';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
@@ -4246,12 +4256,13 @@ $('btnStats').onclick = async () => {
 /* ===================== BANC INTERACTIF (2026-10-30) =====================
    Écran 2.19.4-banc : opcode 26 BLE_LIVE (RAM), paquet 0x09 (paramètres actifs).
    Spec : chantier-z8-osf/specs/banc-interactif-et-loi-plateau.md */
+const MOTOR_DIAG = [[1,'Hall perturbé'],[2,'Hall mort'],[4,'couple en secours'],[8,'E07 réarmée'],[16,'perte comm vue'],[32,'sous-tension vue'],[64,'moteur seul vu'],[128,'coupure franche vue']];
 let live = null;   // dernier 0x09 : {ver,lvl,P,T,capW,walk,mode,l5On,l5Off,refuse,dirty,caps[],motor,pmaxW,t}
 const LIVE_REFUSE = {0:'', 1:'arguments', 2:'refusé en roulant', 3:'moteur non Z8-OSF', 4:'code de commit'};
 function handle09(dv){
   const b = i => dv.getUint8(i);
   live = { ver:b(1), lvl:b(2), P:b(3), T:b(4), capW:b(5)*25, walk:b(6), mode:b(7), l5On:b(8)*10, l5Off:b(9)*10,
-           refuse:b(10), dirty:b(11), caps:[b(12),b(13),b(14),b(15),b(16)].map(x=>x*25), motor:b(17), pmaxW:b(18)*25, t:Date.now() };
+           refuse:b(10), dirty:b(11)&127, p012:b(11)>>7, diag:dv.byteLength>=20?b(19):null, caps:[b(12),b(13),b(14),b(15),b(16)].map(x=>x*25), motor:b(17), pmaxW:b(18)*25, t:Date.now() };
   curLvl = live.lvl; $('vLvl').textContent = curLvl;   // 0x09 à 1 Hz : plus fiable que le 0x01 (2 s, encore perdu ~30 %)
   $('balLive').textContent = 'v'+live.ver+' · L'+live.lvl+' · P '+live.P+' / T '+live.T+' · plafond '+(live.capW||'aucun')
     +' W · plafonds L1-L5 '+live.caps.join('/')+' · mode '+live.mode+' · L5 '+live.l5On+' s / '+live.l5Off+' s'
@@ -4259,7 +4270,7 @@ function handle09(dv){
 }
 const liveFresh = now => live && (now - live.t) < 3000;
 function liveFields(now){
-  return liveFresh(now) ? { liveVer:live.ver, llvl:live.lvl, fP:live.P, fT:live.T, capW:live.capW, lmode:live.mode } : {};
+  return liveFresh(now) ? { liveVer:live.ver, llvl:live.lvl, fP:live.P, fT:live.T, capW:live.capW, lmode:live.mode, ...(live.diag!=null?{mdiag:live.diag, p012:live.p012}:{}) } : {};
 }
 async function liveSend(sub, a, b){
   if(!nusRx) return false;
