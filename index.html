@@ -1329,18 +1329,19 @@ function bmsOnNotify(ev){
     }
     if(f[1]!==0x03 || f[2]!==0x00 || len<8) continue;
     const v=((f[4]<<8)|f[5])/100; let i=(f[6]<<8)|f[7]; if(i>32767) i-=65536; i=-i/100;   // décharge positive
-    bms={v, i, p:v*i, soc:len>19?f[4+19]:null, ah:((f[8]<<8)|f[9])/100, t:Date.now()};
+    const ntc=[]; if(len>22) for(let k=0;k<f[4+22] && 24+k*2<len;k++) ntc.push(+((((f[4+23+k*2]<<8)|f[4+24+k*2])-2731)/10).toFixed(1));   // sondes NTC, 0,1 K
+    bms={v, i, p:v*i, soc:len>19?f[4+19]:null, ah:((f[8]<<8)|f[9])/100, ntc, t:Date.now()};
     bmsInfo={ns:len>21?f[4+21]:null, fullAh:((f[10]<<8)|f[11])/100, cycles:len>9?((f[12]<<8)|f[13]):null};
     $('vBms').textContent=bms.p.toFixed(0);
     $('vBmsU').textContent=v.toFixed(2)+' V · '+i.toFixed(2)+' A'+(bms.soc!=null?' · SOC '+bms.soc+' %':'')
-      +(bmsCells?' · '+bmsCells.n+'S '+bmsCells.min.toFixed(3)+'-'+bmsCells.max.toFixed(3)+' V':'')
+      +(bmsCells?' · '+bmsCells.n+'S '+bmsCells.min.toFixed(3)+'-'+bmsCells.max.toFixed(3)+' V':'')+(bms.ntc.length?' · '+bms.ntc.join('/')+' °C':'')
       +(dispSoc?' · écran '+dispSoc.soc+' %':'');
     $('bmsTile').classList.toggle('bad', v>0 && v<43);
   }
 }
 // champs JSONL (vides si BMS absent ou muet depuis > 3 s)
 function sBmsFields(now){ return (bms && now-bms.t<3000) ? {vbat:+bms.v.toFixed(2), ibat:+bms.i.toFixed(2), pbat:+bms.p.toFixed(1),
-  ...(bms.soc!=null?{bsoc:bms.soc}:{}), bah:bms.ah,
+  ...(bms.soc!=null?{bsoc:bms.soc}:{}), bah:bms.ah, ...(bmsInfo?{bfull:bmsInfo.fullAh}:{}), ...(bms.ntc.length?{btemp:bms.ntc}:{}),
   ...(bmsCells && now-bmsCells.t<30000 ? {vcmin:bmsCells.min, vcmax:bmsCells.max} : {})} : {}; }
 // SOC et Wh du display (paquet 0x05 page 1, display >= 2.19.5) : une page toutes les ~2 s
 function socFields(now){ return (dispSoc && now-dispSoc.t<6000) ? {soc:dispSoc.soc, whX10:dispSoc.whX10} : {}; }
@@ -4093,7 +4094,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-11-06';
+const DASH_VERSION = '2026-11-06b';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
