@@ -2789,7 +2789,7 @@ const S_CAR={ reserveS:0, runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, 
   settleMin:10, settleMax:30, settleMaxOsf:20, tol:0.04, stable:25, maxS:60, budgetS:300, servoS:4, gain:0.5, stepMax:50, ergMin:40, ergMax:1000,
   erg0:{'0-150':105, '4-100':230, '4-150':385, '5-100':340, '5-150':560},
   gear:{13:'vitesse 8 (13T)', 17:'vitesse 6 (17T)'},   // CUES 11-13-15-17-20-23-28-34-41
-  erg0Osf:{'0-150':105, '4-100':345, '4-150':385, '5-100':550, '5-150':590},   // plateau : ERG ≈ roue L0 + 0,8 × plafond réel
+  erg0Osf:{'0-150':105, '4-100':330, '4-150':375, '5-100':510, '5-150':555},   // OSF L4-L5 : ERG FIXE, relevé au banc du 06/11 (90-143 W cycliste)
   depKg:25, pushKg:12, reps:3, kgSat:30,
   dyn:{launchV:22, launchMax:12, after:2, pushV:22, pushes:3, pushS:5, relS:6, settleS:3} };
 const S_DYN_BASE={...S_DYN};
@@ -3226,7 +3226,7 @@ function nextStepS(){
   if(p.idx>=p.steps.length) return endProtoS(false);
   const st=p.steps[p.idx]; p.curId=st.id;
   $('pTitle').textContent=st.id+' — '+st.title+(st.kind==='plateau'?'  ('+(st.stableS??p.params.stable)+' s cumulées dans la bande, '+(st.maxS??p.params.max)+' s max)':'');
-  if(st.car){ p.ergNow=st.erg; p.ergT=Date.now(); p.servoDone=!st.pedT; p.pedNow=null; }
+  if(st.car){ p.ergNow=st.erg; p.ergT=Date.now(); p.servoDone=!st.pedT||(!isStock()&&st.lvl>=4); p.pedNow=null; }
   $('pInstr').innerHTML=st.instr;
   $('pWait').hidden=true; $('pPrompt').hidden=true;
   p.sph = st.kind==='launch' ? 'stop' : st.kind==='push' ? 'settle' : st.kind==='sweep' ? 'stair' : null;
@@ -4125,7 +4125,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-11-06d';
+const DASH_VERSION = '2026-11-06e';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
