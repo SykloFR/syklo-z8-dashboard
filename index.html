@@ -1341,7 +1341,7 @@ function bmsOnNotify(ev){
 }
 // champs JSONL (vides si BMS absent ou muet depuis > 3 s)
 function sBmsFields(now){ return (bms && now-bms.t<3000) ? {vbat:+bms.v.toFixed(2), ibat:+bms.i.toFixed(2), pbat:+bms.p.toFixed(1),
-  ...(bms.soc!=null?{bsoc:bms.soc}:{}), bah:bms.ah, ...(bmsInfo?{bfull:bmsInfo.fullAh}:{}), ...(bms.ntc.length?{btemp:bms.ntc}:{}),
+  ...(bms.soc!=null?{bsoc:bms.soc}:{}), bah:bms.ah, ...(bmsInfo?{bfull:bmsInfo.fullAh}:{}), ...(bms.ntc&&bms.ntc.length?{btemp:bms.ntc}:{}),
   ...(bmsCells && now-bmsCells.t<30000 ? {vcmin:bmsCells.min, vcmax:bmsCells.max} : {})} : {}; }
 // SOC et Wh du display (paquet 0x05 page 1, display >= 2.19.5) : une page toutes les ~2 s
 function socFields(now){ return (dispSoc && now-dispSoc.t<6000) ? {soc:dispSoc.soc, whX10:dispSoc.whX10} : {}; }
