@@ -2785,7 +2785,7 @@ const S_DYN={launchV:32, launchMax:20, after:3, pushV:28, pushes:2, pushS:5, rel
    Rivo ~80 W roue à 22 km/h) : FW0(100) est extrapolée entre le plancher et 150 W, et signalée.
    Le capteur stock sature vers 190 (+100 pas) : les masses > 30 kg servent à voir la compression,
    jamais à calculer k. Thermique et cooldown hors champ (décision Yanni 05/11) : cooling down OFF. */
-const S_CAR={ reserveS:0, runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, C79:{cog:17, v:28}, DEP:{cog:17}, REP:{cog:17} },
+const S_CAR={ reserveS:0, repErg:{4:375, 5:555}, runs:{ T0:{}, C47:{cog:13, v:22}, C62:{cog:17, v:22}, C79:{cog:17, v:28}, DEP:{cog:17}, REP:{cog:17} },
   settleMin:10, settleMax:30, settleMaxOsf:20, tol:0.04, stable:25, maxS:60, budgetS:300, servoS:4, gain:0.5, stepMax:50, ergMin:40, ergMax:1000,
   erg0:{'0-150':105, '4-100':230, '4-150':385, '5-100':340, '5-150':560},
   gear:{13:'vitesse 8 (13T)', 17:'vitesse 6 (17T)'},   // CUES 11-13-15-17-20-23-28-34-41
@@ -2837,7 +2837,7 @@ function carSteps(p){
   for(const l of [4,5]){
     steps.push(lv(l));
     if(R==='DEP') for(let i=1;i<=S_CAR.reps;i++){ const st=sLaunchStep(l); st.id+=i; st.title+=' ('+i+'/'+S_CAR.reps+')'; steps.push(st); }
-    else steps.push(sPushStep(l));
+    else { const st=sPushStep(l); if(!isStock()) st.erg=S_CAR.repErg[l]; steps.push(st); }
   }
   return {steps, speeds:[]};
 }
@@ -3231,7 +3231,7 @@ function nextStepS(){
   $('pWait').hidden=true; $('pPrompt').hidden=true;
   p.sph = st.kind==='launch' ? 'stop' : st.kind==='push' ? 'settle' : st.kind==='sweep' ? 'stair' : null;
   if(st.kind==='plateau') sApplyTrainer(st);   // certains trainers oublient la consigne après un arrêt de roue ; ERG par étape en étalonnage
-  else if(st.kind!=='level' && !p.calib) sApplyTrainer();
+  else if(st.kind!=='level' && !p.calib) sApplyTrainer(st.erg?st:undefined);
 }
 
 /* Un échantillon COMPTE s'il est dans la bande au bon niveau, dans la bande depuis ≥ S_DEBOUNCE
@@ -4125,7 +4125,7 @@ setInterval(() => { if(gpsFix) renderGps(); }, 1000);
    file d'attente IndexedDB + telechargement local, renvoi au clic « Renvoyer ».
    Chemin : logs/<ID>/<AAAA-MM-JJ>/<AAAA-MM-JJTHH-MM-SS>_<ID>_<ctx>[-<tag>].jsonl
    Premiere ligne du fichier = {"meta":{...}} (schema decrit dans le README du depot). */
-const DASH_VERSION = '2026-11-06e';
+const DASH_VERSION = '2026-11-06f';
 const ARC_REPO = 'SykloFR/syklo-logs', ARC_BRANCH = 'main', GH_API = 'https://api.github.com';
 const ARC_FIELDS = ['arcId','arcType','arcFw','arcCtx','arcNote'];
 function arcLoad(){
